@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.commentary/
+.env
+.env.*
+!.env.example
+npm-debug.log*
+*.tsbuildinfo
+

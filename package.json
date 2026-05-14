@@ -1,0 +1,57 @@
+{
+  "name": "@commentary-dev/cli",
+  "version": "0.1.0",
+  "description": "Command-line companion for Commentary draft review sessions.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "commentary": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "public:check": "node scripts/public-readiness-check.mjs",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run test/api-client.test.ts test/commands.test.ts",
+    "test:live": "tsx scripts/live-smoke.ts",
+    "pack:smoke": "npm pack --dry-run",
+    "verify": "npm run public:check && npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build && npm run pack:smoke"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "commander": "^14.0.2",
+    "fast-glob": "^3.3.3",
+    "open": "^10.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^4.0.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/commentary-dev/commentary-cli.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
