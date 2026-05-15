@@ -168,12 +168,20 @@ export class CommentaryApiClient {
     );
   }
 
-  async replyToComment(input: { sessionId: string; threadId: string; bodyMarkdown: string }) {
+  async replyToComment(input: {
+    sessionId: string;
+    threadId: string;
+    bodyMarkdown: string;
+    agentAlias?: string | undefined;
+  }) {
     return this.request<{ ok: true; thread: DraftThread }>(
       `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/comments/${encodeURIComponent(input.threadId)}/replies`,
       {
         method: "POST",
-        body: { bodyMarkdown: input.bodyMarkdown },
+        body: {
+          bodyMarkdown: input.bodyMarkdown,
+          ...(input.agentAlias ? { agentAlias: input.agentAlias } : {}),
+        },
       },
     );
   }

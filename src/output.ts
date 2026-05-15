@@ -59,7 +59,7 @@ function commentBody(thread: DraftThread) {
 
 function commentAuthor(thread: DraftThread) {
   const first = thread.comments[0];
-  return first?.authorLogin ?? first?.author ?? "Unknown";
+  return first?.agentAlias ?? first?.authorLogin ?? first?.author ?? "Unknown";
 }
 
 export function formatCommentsText(threads: DraftThread[]) {
@@ -113,7 +113,7 @@ export function formatCommentsMarkdown(input: {
       lines.push("Replies:");
       replies.forEach((reply) => {
         lines.push(
-          `- ${reply.authorLogin ?? reply.author ?? "Unknown"}: ${reply.bodyMarkdown ?? reply.body ?? ""}`,
+          `- ${reply.agentAlias ?? reply.authorLogin ?? reply.author ?? "Unknown"}: ${reply.bodyMarkdown ?? reply.body ?? ""}`,
         );
       });
       lines.push("");

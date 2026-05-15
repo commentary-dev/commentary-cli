@@ -56,6 +56,7 @@ export type DraftThreadComment = {
   id?: string | number;
   author?: string | null;
   authorLogin?: string | null;
+  agentAlias?: string | null;
   bodyMarkdown?: string | null;
   body?: string | null;
   createdAt?: string;
