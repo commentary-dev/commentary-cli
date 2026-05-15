@@ -163,7 +163,7 @@ describe("CLI commands", () => {
         reviewSessionId: "draft_1",
         reviewUrl: "https://commentary.test/review/draft/draft_1",
         baseUrl: "https://commentary.test",
-        rootPath: ".",
+        rootPath: "..",
         trackedFiles: [],
         source: [],
         createdAt: "",
@@ -211,7 +211,7 @@ describe("CLI commands", () => {
         reviewSessionId: "draft_1",
         reviewUrl: "https://commentary.test/review/draft/draft_1",
         baseUrl: "https://commentary.test",
-        rootPath: ".",
+        rootPath: "..",
         trackedFiles: [],
         source: [],
         createdAt: "",
@@ -264,6 +264,143 @@ describe("CLI commands", () => {
     expect(payload.event.thread.id).toBe("thread_1");
   });
 
+  it("wait-comment returns reply events by default", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async () =>
+      sseResponse([
+        [
+          "id: event_1",
+          "event: draft-review",
+          `data: ${JSON.stringify({
+            id: "event_1",
+            type: "reply.created",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            payload: { threadId: "thread_1", filePath: "docs/spec.md" },
+            thread: {
+              id: "thread_1",
+              fileId: "file_1",
+              filePath: "docs/spec.md",
+              status: "open",
+              comments: [
+                { authorLogin: "user", bodyMarkdown: "Please clarify." },
+                { authorLogin: "reviewer", bodyMarkdown: "Following up." },
+              ],
+            },
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+      ]),
+    );
+
+    const code = await runCli(["wait-comment", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output).event.type).toBe("reply.created");
+  });
+
+  it("reconnects wait-comment with the last seen cursor after a stream closes", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    let calls = 0;
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      calls += 1;
+      if (calls === 1) {
+        expect(String(url)).toBe(
+          "https://commentary.test/api/v1/draft-reviews/draft_1/events?cursor=latest",
+        );
+        return sseResponse([
+          [
+            "id: event_0",
+            "event: draft-review",
+            `data: ${JSON.stringify({
+              id: "event_0",
+              type: "revision.created",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              payload: {},
+              thread: null,
+            })}`,
+            "",
+            "",
+          ].join("\n"),
+        ]);
+      }
+      expect(String(url)).toBe(
+        "https://commentary.test/api/v1/draft-reviews/draft_1/events?cursor=event_0",
+      );
+      return sseResponse([
+        [
+          "id: event_1",
+          "event: draft-review",
+          `data: ${JSON.stringify({
+            id: "event_1",
+            type: "comment.created",
+            createdAt: "2026-01-01T00:00:01.000Z",
+            payload: {},
+            thread: {
+              id: "thread_1",
+              fileId: "file_1",
+              filePath: "docs/spec.md",
+              status: "open",
+              comments: [{ authorLogin: "user", bodyMarkdown: "Please clarify." }],
+            },
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+      ]);
+    });
+
+    const code = await runCli(["wait-comment", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(output).event.id).toBe("event_1");
+  });
+
   it("times out while waiting for a draft review comment", async () => {
     await mkdir(path.join(dir, ".commentary"), { recursive: true });
     await writeFile(
@@ -301,5 +438,234 @@ describe("CLI commands", () => {
 
     expect(code).toBe(124);
     expect(errors).toContain("Timed out waiting for a draft review comment.");
+  });
+
+  it("sends agent aliases on replies and closing resolve messages", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/comments/thread_1/replies")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          bodyMarkdown: "Updated.",
+          agentAlias: "Docs agent",
+        });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_1",
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/comments/thread_2/replies")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          bodyMarkdown: "Fixed.",
+          agentAlias: "Env agent",
+        });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_2",
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/comments/thread_2/status")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ status: "resolved" });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_2",
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "resolved",
+            comments: [],
+          },
+        });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const replyCode = await runCli(
+      ["reply", "thread_1", "Updated.", "--alias", "Docs agent", "--token", "token"],
+      {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      },
+    );
+    expect(replyCode).toBe(0);
+
+    const previousAlias = process.env.COMMENTARY_AGENT_ALIAS;
+    process.env.COMMENTARY_AGENT_ALIAS = "Env agent";
+    try {
+      const resolveCode = await runCli(
+        ["resolve", "thread_2", "--message", "Fixed.", "--token", "token"],
+        {
+          cwd: dir,
+          stdout,
+          stderr,
+          fetchImpl: fetchImpl as typeof fetch,
+          isTty: false,
+        },
+      );
+      expect(resolveCode).toBe(0);
+    } finally {
+      if (previousAlias === undefined) {
+        delete process.env.COMMENTARY_AGENT_ALIAS;
+      } else {
+        process.env.COMMENTARY_AGENT_ALIAS = previousAlias;
+      }
+    }
+  });
+
+  it("reopens resolved threads after replying", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/comments/thread_1/replies")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ bodyMarkdown: "New info." });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_1",
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "resolved",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/comments/thread_1/status")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ status: "open" });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_1",
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["reply", "thread_1", "New info.", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(output).thread.status).toBe("open");
+  });
+
+  it("prints command help with agent-oriented examples", async () => {
+    const code = await runCli(["reply", "--help"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(output).toContain("Usage: commentary reply [options] <thread-id> <message>");
+    expect(output).toContain("Examples:");
+    expect(output).toContain("COMMENTARY_AGENT_ALIAS");
+  });
+
+  it("shows open and resolved comment counts in status", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(path.join(dir, "spec.md"), "# Spec\n", "utf8");
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [
+          {
+            path: "spec.md",
+            contentType: "markdown",
+            contentHash: "wrong",
+            sizeBytes: 7,
+          },
+        ],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/comments?status=open")) {
+        return jsonResponse({ ok: true, threads: [{ id: "thread_1" }, { id: "thread_2" }] });
+      }
+      if (requestUrl.endsWith("/comments?status=resolved")) {
+        return jsonResponse({ ok: true, threads: [{ id: "thread_3" }] });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["status", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(output).toContain("Open comments: 2");
+    expect(output).toContain("Resolved comments: 1");
   });
 });

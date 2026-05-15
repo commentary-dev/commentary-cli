@@ -97,13 +97,14 @@ Wait for the next new review comment:
 ```bash
 commentary wait-comment --json
 commentary wait-comment --file docs/spec.md --timeout 15m
+commentary wait-comment --no-include-replies
 ```
 
 Reply and resolve:
 
 ```bash
-commentary reply <thread-id> "Updated this in revision 3."
-commentary resolve <thread-id> --message "Addressed in revision 3."
+commentary reply <thread-id> "Updated this in revision 3." --alias "Docs agent"
+commentary resolve <thread-id> --message "Addressed in revision 3." --alias "Docs agent"
 ```
 
 Pull latest reviewed content safely:
@@ -132,8 +133,8 @@ commentary revision
 commentary watch
 commentary comments
 commentary wait-comment
-commentary reply <comment-id> <message>
-commentary resolve <comment-id>
+commentary reply <thread-id> <message>
+commentary resolve <thread-id>
 commentary pull
 commentary open
 commentary status
@@ -161,6 +162,7 @@ COMMENTARY_TOKEN
 COMMENTARY_SESSION
 COMMENTARY_NO_COLOR
 COMMENTARY_CONFIG_DIR
+COMMENTARY_AGENT_ALIAS
 ```
 
 ## Base URLs
@@ -259,7 +261,17 @@ JSON output is intended to be stable across patch releases. Additive fields may 
 
 `commentary wait-comment` uses Commentary draft-review live updates and requires a server that exposes `GET /api/v1/draft-reviews/{sessionId}/events`. Tokens need the `commentary.comments.read` scope.
 
-By default the command starts from `cursor=latest`, waits for a future `comment.created` event, prints the first match, and exits. Use `--include-replies` to also return `reply.created`, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely.
+By default the command starts from `cursor=latest`, waits for a future `comment.created` or `reply.created` event, prints the first match, and exits. Replies are included by default so a human follow-up to an agent reply wakes the waiting agent. Use `--no-include-replies` to wait only for top-level comments, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely. If the event stream disconnects before a matching comment arrives, the CLI reconnects with the latest cursor it has seen.
+
+## Heading Anchors
+
+Commentary-rendered Markdown heading anchors normalize heading text to lowercase words separated by single hyphens. Punctuation and repeated separators collapse, so `Security & Compliance` becomes `#security-compliance`. This can differ from GitHub-style anchors for headings with punctuation.
+
+## Agent Alias
+
+Use `--alias <name>` on `reply` or `resolve --message` to attribute agent-authored replies. For automation, set `COMMENTARY_AGENT_ALIAS`; an explicit `--alias` flag takes precedence.
+
+`commentary reply` reopens a resolved thread when the reply API response still reports the thread as resolved. This keeps a thread active after a new follow-up response.
 
 ## Local Metadata
 

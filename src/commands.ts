@@ -168,6 +168,11 @@ function payloadString(event: DraftReviewLiveEvent, key: string) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function resolveAgentAlias(alias?: string | undefined) {
+  const value = alias?.trim() || process.env.COMMENTARY_AGENT_ALIAS?.trim();
+  return value || undefined;
+}
+
 function isWaitCommentMatch(input: {
   event: DraftReviewLiveEvent;
   includeReplies?: boolean | undefined;
@@ -175,7 +180,7 @@ function isWaitCommentMatch(input: {
 }) {
   const allowed =
     input.event.type === "comment.created" ||
-    (input.includeReplies === true && input.event.type === "reply.created");
+    (input.includeReplies !== false && input.event.type === "reply.created");
   if (!allowed) {
     return false;
   }
@@ -649,7 +654,7 @@ export async function replyCommand(
   runtime: CommandRuntime,
   threadId: string,
   message: string,
-  options: GlobalOptions & { session?: string },
+  options: GlobalOptions & { session?: string; alias?: string },
 ) {
   const loaded = options.session ? null : await loadSession(runtime, options);
   const sessionId = options.session ?? loaded?.metadata.reviewSessionId;
@@ -660,11 +665,31 @@ export async function replyCommand(
     ...options,
     baseUrl: loaded?.metadata.baseUrl ?? options.baseUrl,
   });
-  const result = await client.replyToComment({ sessionId, threadId, bodyMarkdown: message });
+  const result = await client.replyToComment({
+    sessionId,
+    threadId,
+    bodyMarkdown: message,
+    agentAlias: resolveAgentAlias(options.alias),
+  });
+  const thread =
+    result.thread.status === "resolved"
+      ? (
+          await client.updateCommentStatus({
+            sessionId,
+            threadId,
+            status: "open",
+          })
+        ).thread
+      : result.thread;
   if (options.json) {
-    writeJson(runtime.stdout, { ok: true, thread: result.thread });
+    writeJson(runtime.stdout, { ok: true, thread });
   } else {
-    writeText(runtime.stdout, `Replied to ${threadId}.`);
+    writeText(
+      runtime.stdout,
+      thread.status === "open" && result.thread.status === "resolved"
+        ? `Replied to ${threadId} and reopened the thread.`
+        : `Replied to ${threadId}.`,
+    );
   }
 }
 
@@ -674,6 +699,7 @@ export async function resolveCommand(
   options: GlobalOptions & {
     session?: string;
     message?: string;
+    alias?: string;
   },
 ) {
   const loaded = options.session ? null : await loadSession(runtime, options);
@@ -686,7 +712,12 @@ export async function resolveCommand(
     baseUrl: loaded?.metadata.baseUrl ?? options.baseUrl,
   });
   if (options.message?.trim()) {
-    await client.replyToComment({ sessionId, threadId, bodyMarkdown: options.message.trim() });
+    await client.replyToComment({
+      sessionId,
+      threadId,
+      bodyMarkdown: options.message.trim(),
+      agentAlias: resolveAgentAlias(options.alias),
+    });
   }
   const result = await client.updateCommentStatus({ sessionId, threadId, status: "resolved" });
   if (options.json) {
@@ -797,15 +828,25 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
   const current = await readTrackedFiles(root, loaded.metadata.trackedFiles);
   const changed = changedFiles(current, loaded.metadata.trackedFiles).map((file) => file.path);
   let openComments: number | null = null;
+  let resolvedComments: number | null = null;
   try {
     const client = await makeClient(runtime, { ...options, baseUrl: loaded.metadata.baseUrl });
-    openComments = (
-      await client.listComments({ sessionId: loaded.metadata.reviewSessionId, status: "open" })
-    ).threads.length;
+    const [openResult, resolvedResult] = await Promise.all([
+      client.listComments({ sessionId: loaded.metadata.reviewSessionId, status: "open" }),
+      client.listComments({ sessionId: loaded.metadata.reviewSessionId, status: "resolved" }),
+    ]);
+    openComments = openResult.threads.length;
+    resolvedComments = resolvedResult.threads.length;
   } catch {
     openComments = null;
+    resolvedComments = null;
   }
-  const payload = { ...publicSessionJson(loaded.metadata), changedFiles: changed, openComments };
+  const payload = {
+    ...publicSessionJson(loaded.metadata),
+    changedFiles: changed,
+    openComments,
+    resolvedComments,
+  };
   if (options.json) {
     writeJson(runtime.stdout, payload);
   } else {
@@ -819,6 +860,7 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
         `Last revision: ${loaded.metadata.lastKnownRevision ?? "unknown"}`,
         `Changed files: ${changed.length ? changed.join(", ") : "none"}`,
         `Open comments: ${openComments ?? "unknown"}`,
+        `Resolved comments: ${resolvedComments ?? "unknown"}`,
       ].join("\n"),
     );
   }

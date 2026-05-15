@@ -1,11 +1,11 @@
 {
   "name": "@commentary-dev/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Command-line companion for Commentary draft review sessions.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "commentary": "./dist/index.js"
+    "commentary": "dist/index.js"
   },
   "files": [
     "dist",
@@ -48,7 +48,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/commentary-dev/commentary-cli.git"
+    "url": "git+https://github.com/commentary-dev/commentary-cli.git"
   },
   "publishConfig": {
     "access": "public",
