@@ -8,10 +8,18 @@ import { normalizeBaseUrl, removeStoredToken, resolveToken, setStoredToken } fro
 import { normalizeReviewPath } from "./content.js";
 import { CliError, ExitCode } from "./errors.js";
 import { collectFiles, readTrackedFiles, toTrackedFiles } from "./files.js";
+import {
+  defaultReviewRootForGitBase,
+  hasGitBaseRequest,
+  resolveGitBase,
+  type GitBaseOptions,
+} from "./git-base.js";
 import { contentHash } from "./hash.js";
 import {
   formatCommentsMarkdown,
   formatCommentsText,
+  formatDraftRebased,
+  formatGitBase,
   formatReviewCreated,
   formatRevision,
   formatWaitCommentMarkdown,
@@ -30,7 +38,9 @@ import {
 import type { CollectedFile } from "./files.js";
 import type {
   DraftReviewLiveEvent,
+  DraftReviewGitBaseMetadata,
   DraftReviewRevision,
+  DraftThread,
   RequestedContentType,
   SessionMetadata,
   TrackedFile,
@@ -192,6 +202,84 @@ function isWaitCommentMatch(input: {
   );
 }
 
+async function waitForDraftReviewCommentEvent(input: {
+  client: CommentaryApiClient;
+  sessionId: string;
+  filePath?: string | undefined;
+  includeReplies?: boolean | undefined;
+  cursor?: string | undefined;
+  from?: "beginning" | "latest" | undefined;
+  timeoutMs: number;
+  abortController?: AbortController | undefined;
+  verbose?: boolean | undefined;
+  stderr: Writer;
+}) {
+  const abortController = input.abortController ?? new AbortController();
+  let timedOut = false;
+  let cursor = input.cursor ?? (input.from === "beginning" ? undefined : "latest");
+  let reconnectDelayMs = 1000;
+  const timeout =
+    input.timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          abortController.abort();
+        }, input.timeoutMs)
+      : null;
+
+  try {
+    while (!abortController.signal.aborted) {
+      try {
+        for await (const event of input.client.streamDraftReviewEvents({
+          sessionId: input.sessionId,
+          cursor,
+          signal: abortController.signal,
+        })) {
+          cursor = event.id;
+          reconnectDelayMs = 1000;
+          if (event.type === "draft.deleted") {
+            throw new CliError("Draft review was deleted before a comment arrived.", ExitCode.Api);
+          }
+          if (
+            !isWaitCommentMatch({
+              event,
+              includeReplies: input.includeReplies,
+              filePath: input.filePath,
+            })
+          ) {
+            continue;
+          }
+          abortController.abort();
+          return event;
+        }
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          break;
+        }
+        if (error instanceof CliError && error.exitCode !== ExitCode.Network) {
+          throw error;
+        }
+        if (input.verbose) {
+          input.stderr.write(`Event stream disconnected; reconnecting in ${reconnectDelayMs}ms.\n`);
+        }
+      }
+
+      await delay(reconnectDelayMs, abortController.signal);
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10_000);
+    }
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw new CliError(
+    timedOut
+      ? "Timed out waiting for a draft review comment."
+      : "Stopped waiting for a draft review comment.",
+    timedOut ? ExitCode.Timeout : ExitCode.General,
+  );
+}
+
 export async function loginCommand(
   runtime: CommandRuntime,
   options: GlobalOptions & { token?: string | undefined; noOpen?: boolean | undefined },
@@ -305,14 +393,32 @@ export async function reviewCommand(
     include?: string[];
     exclude?: string[];
     root?: string;
-  },
+  } & GitBaseOptions,
 ) {
-  const root = path.resolve(runtime.cwd, options.root ?? ".");
-  const files = await collectFiles(paths, {
+  const root = await defaultReviewRootForGitBase({
+    cwd: runtime.cwd,
+    explicitRoot: options.root,
+    options,
+  });
+  const collectionPaths =
+    !options.root && options.gitBase === "auto"
+      ? paths.map((inputPath) =>
+          path.isAbsolute(inputPath)
+            ? inputPath
+            : path.relative(root, path.resolve(runtime.cwd, inputPath)) || ".",
+        )
+      : paths;
+  const files = await collectFiles(collectionPaths, {
     root,
     include: options.include,
     exclude: options.exclude,
     requestedContentType: options.contentType ?? "auto",
+  });
+  const gitBase = await resolveGitBase({
+    cwd: runtime.cwd,
+    root,
+    files,
+    options,
   });
   const title =
     options.title?.trim() ||
@@ -324,6 +430,7 @@ export async function reviewCommand(
   const result = await client.createDraftReview({
     title,
     description: options.description ?? null,
+    gitBase,
     files,
   });
   const sessionFilePath = await findSessionFile(root, options.sessionFile ?? SESSION_FILE);
@@ -579,75 +686,159 @@ export async function waitCommentCommand(
   const client = await makeClient(runtime, { ...options, baseUrl });
   const filePath = options.file ? normalizeReviewPath(options.file) : undefined;
   const timeoutMs = parseDurationMs(options.timeout, 30 * 60 * 1000);
-  const abortController = new AbortController();
-  let timedOut = false;
-  let cursor = options.cursor ?? (options.from === "beginning" ? undefined : "latest");
-  let reconnectDelayMs = 1000;
-  const timeout =
-    timeoutMs > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          abortController.abort();
-        }, timeoutMs)
-      : null;
+  const event = await waitForDraftReviewCommentEvent({
+    client,
+    sessionId,
+    filePath,
+    includeReplies: options.includeReplies,
+    cursor: options.cursor,
+    from: options.from,
+    timeoutMs,
+    verbose: options.verbose,
+    stderr: runtime.stderr,
+  });
 
-  try {
-    while (!abortController.signal.aborted) {
-      try {
-        for await (const event of client.streamDraftReviewEvents({
-          sessionId,
-          cursor,
-          signal: abortController.signal,
-        })) {
-          cursor = event.id;
-          reconnectDelayMs = 1000;
-          if (event.type === "draft.deleted") {
-            throw new CliError("Draft review was deleted before a comment arrived.", ExitCode.Api);
-          }
-          if (!isWaitCommentMatch({ event, includeReplies: options.includeReplies, filePath })) {
-            continue;
-          }
+  const format = options.json ? "json" : (options.format ?? "markdown");
+  if (format === "json") {
+    writeJson(runtime.stdout, { ok: true, event });
+  } else if (format === "text") {
+    writeText(runtime.stdout, formatWaitCommentText(event));
+  } else {
+    writeText(runtime.stdout, formatWaitCommentMarkdown({ session, event }));
+  }
+}
 
-          const format = options.json ? "json" : (options.format ?? "markdown");
-          if (format === "json") {
-            writeJson(runtime.stdout, { ok: true, event });
-          } else if (format === "text") {
-            writeText(runtime.stdout, formatWaitCommentText(event));
-          } else {
-            writeText(runtime.stdout, formatWaitCommentMarkdown({ session, event }));
-          }
-          abortController.abort();
-          return;
-        }
-      } catch (error) {
-        if (abortController.signal.aborted) {
-          break;
-        }
-        if (error instanceof CliError && error.exitCode !== ExitCode.Network) {
-          throw error;
-        }
-        if (options.verbose) {
-          runtime.stderr.write(
-            `Event stream disconnected; reconnecting in ${reconnectDelayMs}ms.\n`,
-          );
-        }
-      }
-
-      await delay(reconnectDelayMs, abortController.signal);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10_000);
-    }
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
+export async function nextCommentCommand(
+  runtime: CommandRuntime,
+  options: GlobalOptions & {
+    session?: string;
+    file?: string;
+    includeReplies?: boolean;
+    timeout?: string;
+    format?: "text" | "markdown" | "json";
+  },
+) {
+  const loaded = options.session ? null : await loadSession(runtime, options);
+  const sessionId = options.session ?? loaded?.metadata.reviewSessionId;
+  if (!sessionId) {
+    throw new CliError("A session id is required.", ExitCode.Usage);
   }
 
-  throw new CliError(
-    timedOut
-      ? "Timed out waiting for a draft review comment."
-      : "Stopped waiting for a draft review comment.",
-    timedOut ? ExitCode.Timeout : ExitCode.General,
-  );
+  const baseUrl = loaded?.metadata.baseUrl ?? normalizeBaseUrl(options.baseUrl);
+  const session = loaded?.metadata ?? placeholderSessionMetadata({ sessionId, baseUrl });
+  const client = await makeClient(runtime, { ...options, baseUrl });
+  const filePath = options.file ? normalizeReviewPath(options.file) : undefined;
+  const timeoutMs = parseDurationMs(options.timeout, 30 * 60 * 1000);
+  const abortController = new AbortController();
+  const waitPromise = waitForDraftReviewCommentEvent({
+    client,
+    sessionId,
+    filePath,
+    includeReplies: options.includeReplies,
+    from: "latest",
+    timeoutMs,
+    abortController,
+    verbose: options.verbose,
+    stderr: runtime.stderr,
+  });
+  void waitPromise.catch(() => undefined);
+
+  let openThreads: DraftThread[];
+  try {
+    const result = await client.listComments({
+      sessionId,
+      status: "open",
+      filePath,
+    });
+    openThreads = result.threads;
+  } catch (error) {
+    abortController.abort();
+    throw error;
+  }
+
+  const format = options.json ? "json" : (options.format ?? "markdown");
+  if (openThreads.length > 0) {
+    abortController.abort();
+    if (format === "json") {
+      writeJson(runtime.stdout, { ok: true, source: "open", threads: openThreads });
+    } else if (format === "text") {
+      writeText(runtime.stdout, formatCommentsText(openThreads));
+    } else {
+      writeText(runtime.stdout, formatCommentsMarkdown({ session, threads: openThreads }));
+    }
+    return;
+  }
+
+  const event = await waitPromise;
+  const threads = event.thread ? [event.thread] : [];
+  if (format === "json") {
+    writeJson(runtime.stdout, { ok: true, source: "event", threads, event });
+  } else if (format === "text") {
+    writeText(runtime.stdout, formatWaitCommentText(event));
+  } else {
+    writeText(runtime.stdout, formatWaitCommentMarkdown({ session, event }));
+  }
+}
+
+export async function rebaseCommand(
+  runtime: CommandRuntime,
+  options: GlobalOptions &
+    GitBaseOptions & {
+      dryRun?: boolean | undefined;
+      clearGitBase?: boolean | undefined;
+    },
+) {
+  const loaded = await loadSession(runtime, options);
+  const root = sessionRoot(loaded.filePath, loaded.metadata);
+  const client = await makeClient(runtime, { ...options, baseUrl: loaded.metadata.baseUrl });
+  const files = loaded.metadata.trackedFiles.map((file) => ({
+    path: file.path,
+    absolutePath: path.resolve(root, file.path),
+  }));
+  if (options.clearGitBase && hasGitBaseRequest(options)) {
+    throw new CliError(
+      "Use either --clear-git-base or git base options, not both.",
+      ExitCode.Usage,
+    );
+  }
+  if (!options.clearGitBase && !hasGitBaseRequest(options)) {
+    throw new CliError(
+      "Pass --git-base auto, explicit --git-base-repo/--git-base-sha, or --clear-git-base.",
+      ExitCode.Usage,
+    );
+  }
+  const gitBase = options.clearGitBase
+    ? null
+    : await resolveGitBase({
+        cwd: runtime.cwd,
+        root,
+        files,
+        options,
+      });
+  if (gitBase === undefined) {
+    throw new CliError("Could not resolve GitHub base metadata.", ExitCode.Usage);
+  }
+  if (options.dryRun) {
+    if (options.json) {
+      writeJson(runtime.stdout, { ok: true, dryRun: true, gitBase });
+    } else {
+      writeText(runtime.stdout, `Would update Git base: ${formatGitBase(gitBase)}`);
+    }
+    return;
+  }
+  const result = await client.updateDraftReview({
+    sessionId: loaded.metadata.reviewSessionId,
+    gitBase,
+  });
+  if (options.json) {
+    writeJson(runtime.stdout, {
+      ok: true,
+      draftReview: result.draftReview,
+      gitBase: result.draftReview.gitBase ?? gitBase,
+    });
+  } else {
+    writeText(runtime.stdout, formatDraftRebased({ draftReview: result.draftReview }));
+  }
 }
 
 export async function replyCommand(
@@ -829,12 +1020,15 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
   const changed = changedFiles(current, loaded.metadata.trackedFiles).map((file) => file.path);
   let openComments: number | null = null;
   let resolvedComments: number | null = null;
+  let gitBase: DraftReviewGitBaseMetadata | null = null;
   try {
     const client = await makeClient(runtime, { ...options, baseUrl: loaded.metadata.baseUrl });
-    const [openResult, resolvedResult] = await Promise.all([
+    const [draftResult, openResult, resolvedResult] = await Promise.all([
+      client.getDraftReview(loaded.metadata.reviewSessionId),
       client.listComments({ sessionId: loaded.metadata.reviewSessionId, status: "open" }),
       client.listComments({ sessionId: loaded.metadata.reviewSessionId, status: "resolved" }),
     ]);
+    gitBase = draftResult.draftReview.gitBase ?? null;
     openComments = openResult.threads.length;
     resolvedComments = resolvedResult.threads.length;
   } catch {
@@ -846,6 +1040,7 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
     changedFiles: changed,
     openComments,
     resolvedComments,
+    gitBase,
   };
   if (options.json) {
     writeJson(runtime.stdout, payload);
@@ -861,6 +1056,7 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
         `Changed files: ${changed.length ? changed.join(", ") : "none"}`,
         `Open comments: ${openComments ?? "unknown"}`,
         `Resolved comments: ${resolvedComments ?? "unknown"}`,
+        `Git base: ${formatGitBase(gitBase)}`,
       ].join("\n"),
     );
   }

@@ -1,4 +1,5 @@
 import type {
+  DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
   DraftReviewRevision,
   DraftReviewSession,
@@ -31,8 +32,33 @@ export function formatReviewCreated(input: {
     `Files: ${input.fileCount}`,
     `Session: ${input.draftReview.id}`,
     `URL: ${input.draftReview.reviewUrl}`,
+    `Git base: ${formatGitBase(input.draftReview.gitBase)}`,
     "",
     `Saved local session metadata to ${input.sessionFilePath}`,
+  ].join("\n");
+}
+
+export function formatGitBase(gitBase: DraftReviewGitBaseMetadata | null | undefined) {
+  if (!gitBase) {
+    return "none";
+  }
+  return [
+    `${gitBase.owner}/${gitBase.repo}`,
+    gitBase.ref ? `ref ${gitBase.ref}` : null,
+    gitBase.sha ? `sha ${gitBase.sha}` : null,
+    gitBase.path ? `path ${gitBase.path}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function formatDraftRebased(input: { draftReview: DraftReviewSession }) {
+  return [
+    "Updated Commentary review base",
+    "",
+    `Session: ${input.draftReview.id}`,
+    `URL: ${input.draftReview.reviewUrl}`,
+    `Git base: ${formatGitBase(input.draftReview.gitBase)}`,
   ].join("\n");
 }
 

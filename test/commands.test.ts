@@ -154,6 +154,171 @@ describe("CLI commands", () => {
     expect(synced.lastKnownRevision).toBe(2);
   });
 
+  it("creates a review with explicit GitHub base metadata without storing it locally", async () => {
+    await writeFile(path.join(dir, "spec.md"), "# Spec\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews");
+      expect(JSON.parse(String(init?.body)).gitBase).toEqual({
+        provider: "github",
+        owner: "commentary-dev",
+        repo: "commentary-docs",
+        ref: "main",
+        sha: "abc123",
+        path: "spec.md",
+      });
+      return jsonResponse(
+        {
+          ok: true,
+          sessionId: "draft_1",
+          reviewUrl: "https://commentary.test/review/draft/draft_1",
+          draftReview: {
+            id: "draft_1",
+            title: "Spec",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            gitBase: {
+              provider: "github",
+              owner: "commentary-dev",
+              repo: "commentary-docs",
+              ref: "main",
+              sha: "abc123",
+              path: "spec.md",
+            },
+            files: [{ id: "file_1", path: "spec.md", contentType: "markdown" }],
+            latestRevision: {
+              id: "rev_1",
+              revisionNumber: 1,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "spec.md",
+                  contentType: "markdown",
+                  contentHash: "remote_hash",
+                  sizeBytes: 7,
+                },
+              ],
+            },
+          },
+        },
+        201,
+      );
+    });
+
+    const code = await runCli(
+      [
+        "review",
+        "spec.md",
+        "--title",
+        "Spec",
+        "--no-open",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+        "--git-base-repo",
+        "commentary-dev/commentary-docs",
+        "--git-base-sha",
+        "abc123",
+        "--git-base-ref",
+        "main",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(output).toContain(
+      "Git base: commentary-dev/commentary-docs ref main sha abc123 path spec.md",
+    );
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.gitBase).toBeUndefined();
+  });
+
+  it("updates GitHub base metadata with rebase", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(path.join(dir, "spec.md"), "# Spec\n", "utf8");
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [
+          {
+            path: "spec.md",
+            fileId: "file_1",
+            contentType: "markdown",
+            contentHash: "remote_hash",
+            sizeBytes: 7,
+          },
+        ],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1");
+      expect(init?.method).toBe("PATCH");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        gitBase: {
+          provider: "github",
+          owner: "commentary-dev",
+          repo: "commentary-docs",
+          ref: "main",
+          sha: "abc123",
+          path: "spec.md",
+        },
+      });
+      return jsonResponse({
+        ok: true,
+        draftReview: {
+          id: "draft_1",
+          title: "Spec",
+          reviewUrl: "https://commentary.test/review/draft/draft_1",
+          gitBase: {
+            provider: "github",
+            owner: "commentary-dev",
+            repo: "commentary-docs",
+            ref: "main",
+            sha: "abc123",
+            path: "spec.md",
+          },
+          files: [{ id: "file_1", path: "spec.md", contentType: "markdown" }],
+          latestRevision: null,
+        },
+      });
+    });
+
+    const code = await runCli(
+      [
+        "rebase",
+        "--token",
+        "token",
+        "--git-base-repo",
+        "commentary-dev/commentary-docs",
+        "--git-base-sha",
+        "abc123",
+        "--git-base-ref",
+        "main",
+        "--json",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output).gitBase).toEqual({
+      provider: "github",
+      owner: "commentary-dev",
+      repo: "commentary-docs",
+      ref: "main",
+      sha: "abc123",
+      path: "spec.md",
+    });
+  });
+
   it("formats comments as markdown", async () => {
     await mkdir(path.join(dir, ".commentary"), { recursive: true });
     await writeFile(
@@ -262,6 +427,134 @@ describe("CLI commands", () => {
     const payload = JSON.parse(output);
     expect(payload.event.id).toBe("event_1");
     expect(payload.event.thread.id).toBe("thread_1");
+  });
+
+  it("next-comment returns open threads after starting the event stream", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const requests: string[] = [];
+    const fetchImpl = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push(requestUrl);
+      if (requestUrl.endsWith("/events?cursor=latest")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      }
+      if (requestUrl.endsWith("/comments?status=open")) {
+        return Promise.resolve(
+          jsonResponse({
+            ok: true,
+            threads: [
+              {
+                id: "thread_1",
+                fileId: "file_1",
+                filePath: "docs/spec.md",
+                status: "open",
+                comments: [{ authorLogin: "user", bodyMarkdown: "Please clarify." }],
+              },
+            ],
+          }),
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["next-comment", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(requests[0]).toContain("/events?cursor=latest");
+    expect(requests[1]).toContain("/comments?status=open");
+    const payload = JSON.parse(output);
+    expect(payload.source).toBe("open");
+    expect(payload.threads[0].id).toBe("thread_1");
+  });
+
+  it("next-comment waits for an event when no open threads exist", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/events?cursor=latest")) {
+        return sseResponse([
+          [
+            "id: event_1",
+            "event: draft-review",
+            `data: ${JSON.stringify({
+              id: "event_1",
+              type: "comment.created",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              payload: {},
+              thread: {
+                id: "thread_1",
+                fileId: "file_1",
+                filePath: "docs/spec.md",
+                status: "open",
+                comments: [{ authorLogin: "user", bodyMarkdown: "Please clarify." }],
+              },
+            })}`,
+            "",
+            "",
+          ].join("\n"),
+        ]);
+      }
+      if (requestUrl.endsWith("/comments?status=open")) {
+        return jsonResponse({ ok: true, threads: [] });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["next-comment", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(output);
+    expect(payload.source).toBe("event");
+    expect(payload.event.id).toBe("event_1");
+    expect(payload.threads[0].id).toBe("thread_1");
   });
 
   it("wait-comment returns reply events by default", async () => {
@@ -647,6 +940,25 @@ describe("CLI commands", () => {
     );
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/v1/draft-reviews/draft_1")) {
+        return jsonResponse({
+          ok: true,
+          draftReview: {
+            id: "draft_1",
+            title: "Spec",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            gitBase: {
+              provider: "github",
+              owner: "commentary-dev",
+              repo: "commentary-docs",
+              sha: "abc123",
+              path: "spec.md",
+            },
+            files: [],
+            latestRevision: null,
+          },
+        });
+      }
       if (requestUrl.endsWith("/comments?status=open")) {
         return jsonResponse({ ok: true, threads: [{ id: "thread_1" }, { id: "thread_2" }] });
       }
@@ -667,5 +979,6 @@ describe("CLI commands", () => {
     expect(code).toBe(0);
     expect(output).toContain("Open comments: 2");
     expect(output).toContain("Resolved comments: 1");
+    expect(output).toContain("Git base: commentary-dev/commentary-docs sha abc123 path spec.md");
   });
 });

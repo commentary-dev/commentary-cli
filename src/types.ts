@@ -1,5 +1,6 @@
 export type DraftContentType = "markdown" | "html" | "plain_text";
 export type RequestedContentType = DraftContentType | "auto";
+export type JsonObject = Record<string, unknown>;
 
 export type DraftFileInput = {
   path: string;
@@ -38,6 +39,16 @@ export type DraftReviewRevision = {
   files: DraftReviewFileRevision[];
 };
 
+export type DraftReviewGitBaseMetadata = {
+  provider: "github";
+  owner: string;
+  repo: string;
+  ref?: string | null;
+  sha?: string | null;
+  path?: string | null;
+  metadata?: JsonObject | null;
+};
+
 export type DraftReviewSession = {
   id: string;
   title: string;
@@ -50,6 +61,7 @@ export type DraftReviewSession = {
   updatedAt?: string;
   files: DraftReviewFile[];
   latestRevision: DraftReviewRevision | null;
+  gitBase?: DraftReviewGitBaseMetadata | null;
 };
 
 export type DraftThreadComment = {
@@ -124,5 +136,3 @@ export type SessionMetadata = {
   lastSyncedAt: string;
   lastKnownRevision: number | null;
 };
-
-export type JsonObject = Record<string, unknown>;

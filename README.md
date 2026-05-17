@@ -16,8 +16,9 @@ commentary review ./docs/spec.md
 - Uploads new revisions after local edits.
 - Watches tracked files and syncs changes.
 - Lists comments in text, Markdown, or JSON.
-- Waits for the next live draft-review comment event for local agent loops.
+- Returns currently open comments or waits for the next live draft-review comment event for local agent loops.
 - Replies to and resolves comments.
+- Links a single-file draft review to a GitHub base commit through the Commentary API.
 - Pulls latest reviewed content back to disk with overwrite safeguards.
 - Opens the review URL in the browser when available.
 
@@ -64,7 +65,10 @@ Create a review:
 
 ```bash
 commentary review ./docs/spec.md --title "Product spec"
+commentary review ./docs/spec.md --title "Product spec" --git-base auto
 ```
+
+`--git-base auto` infers the GitHub owner/repo from the local `origin` remote, uses the current `HEAD` commit, and uses the repository-relative file path. For explicit metadata, use `--git-base-repo <owner/repo>` and `--git-base-sha <sha>`.
 
 Create one review from a folder or multiple files:
 
@@ -92,12 +96,21 @@ List open comments for an agent:
 commentary comments --format markdown --open
 ```
 
-Wait for the next new review comment:
+Return the next actionable review comment for an agent:
 
 ```bash
-commentary wait-comment --json
-commentary wait-comment --file docs/spec.md --timeout 15m
-commentary wait-comment --no-include-replies
+commentary next-comment --json
+commentary next-comment --file docs/spec.md --timeout 15m
+commentary next-comment --no-include-replies
+```
+
+`next-comment` starts the live event stream, checks currently open threads, and waits only when nothing is open. Use `wait-comment` when you specifically want a future live event.
+
+Update the GitHub base later:
+
+```bash
+commentary rebase --git-base auto
+commentary rebase --clear-git-base
 ```
 
 Reply and resolve:
@@ -130,8 +143,10 @@ commentary whoami
 commentary review <paths...>
 commentary sync
 commentary revision
+commentary rebase
 commentary watch
 commentary comments
+commentary next-comment
 commentary wait-comment
 commentary reply <thread-id> <message>
 commentary resolve <thread-id>
@@ -219,7 +234,7 @@ App-side draft review limits are enforced before upload:
 2. Run:
 
    ```bash
-   commentary review ./docs/spec.md
+   commentary review ./docs/spec.md --git-base auto
    ```
 
 3. Review the rendered document in Commentary and leave comments.
@@ -229,10 +244,10 @@ App-side draft review limits are enforced before upload:
    commentary comments --format markdown --open
    ```
 
-5. For interactive review loops, the agent can wait for the next comment instead of polling:
+5. For interactive review loops, the agent should use `next-comment` so it does not miss comments created while it was editing:
 
    ```bash
-   commentary wait-comment --json
+   commentary next-comment --timeout 15m --json
    ```
 
 6. The agent updates the local file.
@@ -252,16 +267,32 @@ Use `--json` for automation:
 commentary review ./docs/spec.md --json
 commentary status --json
 commentary comments --json --open
-commentary wait-comment --json
+commentary next-comment --json
 ```
 
 JSON output is intended to be stable across patch releases. Additive fields may appear in minor releases.
 
 ## Live Comment Waiting
 
-`commentary wait-comment` uses Commentary draft-review live updates and requires a server that exposes `GET /api/v1/draft-reviews/{sessionId}/events`. Tokens need the `commentary.comments.read` scope.
+`commentary next-comment` and `commentary wait-comment` use Commentary draft-review live updates and require a server that exposes `GET /api/v1/draft-reviews/{sessionId}/events`. Tokens need the `commentary.comments.read` scope.
 
-By default the command starts from `cursor=latest`, waits for a future `comment.created` or `reply.created` event, prints the first match, and exits. Replies are included by default so a human follow-up to an agent reply wakes the waiting agent. Use `--no-include-replies` to wait only for top-level comments, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely. If the event stream disconnects before a matching comment arrives, the CLI reconnects with the latest cursor it has seen.
+For agent loops, prefer `commentary next-comment --timeout 15m --json`. It starts the live event stream, lists open threads, returns open threads immediately if any exist, and otherwise waits for the next matching event. This avoids relying on the live event stream as a substitute for checking open threads.
+
+`commentary wait-comment` starts from `cursor=latest` by default, waits for a future `comment.created` or `reply.created` event, prints the first match, and exits. Replies are included by default so a human follow-up to an agent reply wakes the waiting agent. Use `--no-include-replies` to wait only for top-level comments, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely. If the event stream disconnects before a matching comment arrives, the CLI reconnects with the latest cursor it has seen.
+
+`commentary wait-comment` is future-event-only by default. It does not list already-open threads.
+
+## GitHub Base Metadata
+
+Single-file draft reviews can be linked to a GitHub base commit:
+
+```bash
+commentary review ./docs/spec.md --git-base auto
+commentary rebase --git-base auto
+commentary rebase --git-base-repo commentary-dev/commentary-docs --git-base-sha abc123
+```
+
+The CLI sends this metadata to the Commentary API as `gitBase`. It is not stored in `.commentary/session.json`, and it does not create branches, commits, pull requests, provider reviews, or GitHub tokens. `commentary revisions` lists uploaded local draft revisions; the GitHub base is server-side comparison metadata, not a local revision row.
 
 ## Heading Anchors
 
