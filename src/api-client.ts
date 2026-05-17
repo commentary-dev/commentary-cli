@@ -2,6 +2,7 @@ import { CliError, ExitCode } from "./errors.js";
 import { SseParser } from "./sse.js";
 import type {
   DraftFileInput,
+  DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
   DraftReviewRevision,
   DraftReviewSession,
@@ -91,6 +92,7 @@ export class CommentaryApiClient {
     title: string;
     description?: string | null;
     files: DraftFileInput[];
+    gitBase?: DraftReviewGitBaseMetadata | null | undefined;
   }) {
     return this.request<{
       ok: true;
@@ -103,6 +105,7 @@ export class CommentaryApiClient {
         title: input.title,
         description: input.description,
         sourceType: "cli",
+        ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
         files: input.files.map((file) => ({
           path: file.path,
           content: file.content,
@@ -110,6 +113,27 @@ export class CommentaryApiClient {
         })),
       },
     });
+  }
+
+  async updateDraftReview(input: {
+    sessionId: string;
+    title?: string | undefined;
+    description?: string | null | undefined;
+    status?: string | undefined;
+    gitBase?: DraftReviewGitBaseMetadata | null | undefined;
+  }) {
+    return this.request<{ ok: true; draftReview: DraftReviewSession }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}`,
+      {
+        method: "PATCH",
+        body: {
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
+        },
+      },
+    );
   }
 
   async getDraftReview(sessionId: string) {

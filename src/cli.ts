@@ -2,9 +2,11 @@ import { Command, Option } from "commander";
 import {
   commentsCommand,
   loginCommand,
+  nextCommentCommand,
   logoutCommand,
   openCommand,
   pullCommand,
+  rebaseCommand,
   replyCommand,
   resolveCommand,
   reviewCommand,
@@ -66,6 +68,19 @@ function helpText(details: string, examples: string[]) {
     "Examples:",
     ...examples.map((example) => `  ${example}`),
   ].join("\n");
+}
+
+function addGitBaseOptions(command: Command) {
+  return command
+    .option("--git-base <mode>", "Use a GitHub base. Supported value: auto.")
+    .option("--git-base-repo <owner/repo>", "GitHub owner/repo for explicit base metadata.")
+    .option("--git-base-sha <sha>", "GitHub commit sha for explicit base metadata.")
+    .option("--git-base-ref <ref>", "GitHub branch or ref label for base metadata.")
+    .option(
+      "--git-base-path <path>",
+      "GitHub file path for base metadata. Defaults to the reviewed file path.",
+    )
+    .option("--git-remote <name>", "Git remote used by --git-base auto.", "origin");
 }
 
 export function buildProgram(runtime: CommandRuntime) {
@@ -173,12 +188,21 @@ export function buildProgram(runtime: CommandRuntime) {
       "Exclude glob for directory review. May be repeated.",
       collectOption,
     )
+    .option("--git-base <mode>", "Use a GitHub base. Supported value: auto.")
+    .option("--git-base-repo <owner/repo>", "GitHub owner/repo for explicit base metadata.")
+    .option("--git-base-sha <sha>", "GitHub commit sha for explicit base metadata.")
+    .option("--git-base-ref <ref>", "GitHub branch or ref label for base metadata.")
+    .option(
+      "--git-base-path <path>",
+      "GitHub file path for base metadata. Defaults to the reviewed file path.",
+    )
+    .option("--git-remote <name>", "Git remote used by --git-base auto.", "origin")
     .addHelpText(
       "after",
       helpText(
         "Creates a hosted draft review and writes .commentary/session.json for later commands.",
         [
-          'commentary review ./docs/spec.md --title "Product spec"',
+          'commentary review ./docs/spec.md --title "Product spec" --git-base auto',
           'commentary review ./docs --include "**/*.md" --exclude "drafts/**"',
           "commentary review ./docs/spec.md --watch --no-open",
           "commentary review ./docs/spec.md --json",
@@ -221,6 +245,27 @@ export function buildProgram(runtime: CommandRuntime) {
     )
     .action(async function (this: Command) {
       await syncCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  addGitBaseOptions(
+    program.command("rebase").description("Update or clear the GitHub base for the linked review."),
+  )
+    .option("--clear-git-base", "Clear the linked GitHub base metadata.")
+    .option("--dry-run", "Resolve and print the base metadata without updating Commentary.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Updates only hosted draft-review base metadata. It does not create branches, commits, pull requests, or provider reviews.",
+        [
+          "commentary rebase --git-base auto",
+          "commentary rebase --git-base-repo commentary-dev/commentary-docs --git-base-sha abc123",
+          "commentary rebase --clear-git-base",
+          "commentary rebase --git-base auto --dry-run --json",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await rebaseCommand(runtime, { ...globalOptions(this), ...this.opts() });
     });
 
   program
@@ -311,6 +356,38 @@ export function buildProgram(runtime: CommandRuntime) {
     });
 
   program
+    .command("next-comment")
+    .description("Return currently open comments, or wait for the next live comment event.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--file <path>", "Filter by review file path, e.g. docs/spec.md.")
+    .option("--include-replies", "Return reply.created events. This is enabled by default.")
+    .option(
+      "--no-include-replies",
+      "Ignore reply.created events and wait only for new top-level comments.",
+    )
+    .option("--timeout <duration>", "Maximum wait time, e.g. 30m, 10s, or 0 for no timeout.", "30m")
+    .addOption(
+      new Option("--format <format>", "Output format")
+        .choices(["text", "markdown", "json"])
+        .default("markdown"),
+    )
+    .addHelpText(
+      "after",
+      helpText(
+        "Agent-safe loop primitive: starts the live stream, checks open threads, then waits only if none are open.",
+        [
+          "commentary next-comment --json",
+          "commentary next-comment --timeout 15m --json",
+          "commentary next-comment --file docs/spec.md --format markdown",
+          "commentary next-comment --no-include-replies --json",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await nextCommentCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  program
     .command("reply")
     .description("Reply to a comment thread.")
     .argument("<thread-id>")
@@ -323,7 +400,7 @@ export function buildProgram(runtime: CommandRuntime) {
     .addHelpText(
       "after",
       helpText(
-        "Adds a reply to the thread id printed by comments or wait-comment. Replies reopen resolved threads.",
+        "Adds a reply to the thread id printed by comments, next-comment, or wait-comment. Replies reopen resolved threads.",
         [
           'commentary reply thread_123 "Updated this in revision 3."',
           'commentary reply thread_123 "Fixed." --alias "Docs agent"',
@@ -439,7 +516,7 @@ export function buildProgram(runtime: CommandRuntime) {
   sync.alias("upload");
   program.addHelpText(
     "after",
-    `\nAgent loop:\n  1. commentary review ./docs/spec.md --title "Spec"\n  2. commentary wait-comment --json\n  3. edit files, then commentary sync --message "Address comments"\n  4. commentary reply <thread-id> "Fixed." --alias "Docs agent"\n\nExamples:\n  npx ${PACKAGE_NAME} review ./docs/spec.md\n  commentary comments --format markdown --open\n  commentary wait-comment --json\n  commentary resolve <thread-id> --message "Addressed."\n`,
+    `\nAgent loop:\n  1. commentary review ./docs/spec.md --title "Spec" --git-base auto\n  2. commentary next-comment --timeout 15m --json\n  3. edit files, then commentary sync --message "Address comments"\n  4. commentary reply <thread-id> "Fixed." --alias "Docs agent"\n\nExamples:\n  npx ${PACKAGE_NAME} review ./docs/spec.md\n  commentary comments --format markdown --open\n  commentary next-comment --json\n  commentary resolve <thread-id> --message "Addressed."\n`,
   );
   return program;
 }
