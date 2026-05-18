@@ -3,7 +3,15 @@ import path from "node:path";
 import chokidar from "chokidar";
 import open from "open";
 import { CommentaryApiClient } from "./api-client.js";
-import { CLIENT_ID, CLIENT_NAME, REQUIRED_SCOPES, SESSION_FILE } from "./constants.js";
+import {
+  CLIENT_ID,
+  CLIENT_NAME,
+  DRAFT_REVIEW_MAX_FILES,
+  DRAFT_REVIEW_MAX_FILE_BYTES,
+  DRAFT_REVIEW_MAX_TOTAL_BYTES,
+  REQUIRED_SCOPES,
+  SESSION_FILE,
+} from "./constants.js";
 import { normalizeBaseUrl, removeStoredToken, resolveToken, setStoredToken } from "./config.js";
 import { normalizeReviewPath } from "./content.js";
 import { CliError, ExitCode } from "./errors.js";
@@ -181,6 +189,55 @@ function payloadString(event: DraftReviewLiveEvent, key: string) {
 function resolveAgentAlias(alias?: string | undefined) {
   const value = alias?.trim() || process.env.COMMENTARY_AGENT_ALIAS?.trim();
   return value || undefined;
+}
+
+function defaultStopFilePath(sessionFilePath: string) {
+  return path.join(path.dirname(sessionFilePath), "stop-listening");
+}
+
+function resolveStopFilePath(input: {
+  runtimeCwd: string;
+  sessionFilePath?: string | undefined;
+  explicitPath?: string | undefined;
+}) {
+  if (input.explicitPath) {
+    return path.resolve(input.runtimeCwd, input.explicitPath);
+  }
+  return input.sessionFilePath ? defaultStopFilePath(input.sessionFilePath) : null;
+}
+
+function assertRevisionLimits(files: CollectedFile[]) {
+  if (files.length > DRAFT_REVIEW_MAX_FILES) {
+    throw new CliError(
+      `Draft reviews support up to ${DRAFT_REVIEW_MAX_FILES} files per revision.`,
+      ExitCode.Usage,
+    );
+  }
+  let totalBytes = 0;
+  for (const file of files) {
+    if (file.sizeBytes > DRAFT_REVIEW_MAX_FILE_BYTES) {
+      throw new CliError(
+        `Draft review file exceeds ${DRAFT_REVIEW_MAX_FILE_BYTES} bytes: ${file.absolutePath}`,
+        ExitCode.Usage,
+      );
+    }
+    totalBytes += file.sizeBytes;
+  }
+  if (totalBytes > DRAFT_REVIEW_MAX_TOTAL_BYTES) {
+    throw new CliError(
+      `Draft review revisions support up to ${DRAFT_REVIEW_MAX_TOTAL_BYTES} total bytes.`,
+      ExitCode.Usage,
+    );
+  }
+}
+
+async function fileExists(filePath: string) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isWaitCommentMatch(input: {
@@ -557,6 +614,92 @@ export async function syncCommand(
   }
 }
 
+export async function trackCommand(
+  runtime: CommandRuntime,
+  paths: string[],
+  options: GlobalOptions & {
+    message?: string;
+    contentType?: RequestedContentType;
+    include?: string[];
+    exclude?: string[];
+    dryRun?: boolean;
+  },
+) {
+  const loaded = await loadSession(runtime, options);
+  const root = sessionRoot(loaded.filePath, loaded.metadata);
+  const current = await readTrackedFiles(root, loaded.metadata.trackedFiles);
+  const additions = await collectFiles(paths, {
+    root,
+    include: options.include,
+    exclude: options.exclude,
+    requestedContentType: options.contentType ?? "auto",
+  });
+  const filesByPath = new Map(current.map((file) => [file.path, file]));
+  for (const file of additions) {
+    const existing = loaded.metadata.trackedFiles.find((tracked) => tracked.path === file.path);
+    filesByPath.set(file.path, { ...file, fileId: existing?.fileId });
+  }
+  const nextFiles = [...filesByPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+  assertRevisionLimits(nextFiles);
+  const added = additions
+    .map((file) => file.path)
+    .filter(
+      (filePath) => !loaded.metadata.trackedFiles.some((tracked) => tracked.path === filePath),
+    );
+
+  if (options.dryRun) {
+    const payload = {
+      ok: true,
+      dryRun: true,
+      addedFiles: added,
+      trackedFiles: nextFiles.map((file) => file.path),
+      fileCount: nextFiles.length,
+    };
+    if (options.json) {
+      writeJson(runtime.stdout, payload);
+    } else {
+      writeText(runtime.stdout, added.length ? added.join("\n") : "No new files to track.");
+    }
+    return;
+  }
+
+  const client = await makeClient(runtime, { ...options, baseUrl: loaded.metadata.baseUrl });
+  const result = await client.createRevision({
+    sessionId: loaded.metadata.reviewSessionId,
+    summary: options.message ?? null,
+    files: nextFiles,
+  });
+  const nextMetadata: SessionMetadata = {
+    ...loaded.metadata,
+    trackedFiles: toTrackedFiles(nextFiles, apiFilesFromRevision(result.revision)),
+    source: ["review", ...nextFiles.map((file) => file.path)],
+    lastSyncedAt: nowIso(),
+    lastKnownRevision: result.revision.revisionNumber,
+  };
+  await saveSessionMetadata(loaded.filePath, nextMetadata);
+
+  if (options.json) {
+    writeJson(runtime.stdout, {
+      ok: true,
+      revision: result.revision,
+      addedFiles: added,
+      session: publicSessionJson(nextMetadata),
+    });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatRevision({
+        metadata: nextMetadata,
+        revision: result.revision,
+        uploaded: nextFiles.length,
+        noOp: result.noOp,
+      }),
+    );
+  }
+}
+
 export async function watchCommand(
   runtime: CommandRuntime,
   options: GlobalOptions & {
@@ -620,6 +763,11 @@ export async function commentsCommand(
     all?: boolean;
     file?: string;
     session?: string;
+    watch?: boolean;
+    jsonl?: boolean;
+    stopFile?: string;
+    stop?: boolean;
+    includeReplies?: boolean;
   },
 ) {
   const loaded = options.session ? null : await loadSession(runtime, options);
@@ -630,12 +778,77 @@ export async function commentsCommand(
   }
   const baseUrl = metadata?.baseUrl ?? normalizeBaseUrl(options.baseUrl);
   const client = await makeClient(runtime, { ...options, baseUrl });
+  const stopPath = resolveStopFilePath({
+    runtimeCwd: runtime.cwd,
+    sessionFilePath: loaded?.filePath,
+    explicitPath: options.stopFile,
+  });
+
+  if (options.stop) {
+    if (!stopPath) {
+      throw new CliError("--stop requires local session metadata or --stop-file.", ExitCode.Usage);
+    }
+    await fs.mkdir(path.dirname(stopPath), { recursive: true });
+    await fs.writeFile(stopPath, `${new Date().toISOString()}\n`, "utf8");
+    if (options.json || options.jsonl) {
+      writeJson(runtime.stdout, { ok: true, stopped: true, stopFile: stopPath });
+    } else {
+      writeText(runtime.stdout, `Stop requested: ${stopPath}`);
+    }
+    return;
+  }
+
   const status = options.all ? undefined : options.resolved ? "resolved" : "open";
   const result = await client.listComments({
     sessionId,
     status,
     filePath: options.file ? normalizeReviewPath(options.file) : undefined,
   });
+  if (options.watch) {
+    if (!stopPath) {
+      throw new CliError("--watch requires local session metadata or --stop-file.", ExitCode.Usage);
+    }
+    await fs.rm(stopPath, { force: true });
+    const filePath = options.file ? normalizeReviewPath(options.file) : undefined;
+    const abortController = new AbortController();
+    const stopTimer = setInterval(() => {
+      void fileExists(stopPath).then((exists) => {
+        if (exists) {
+          abortController.abort();
+        }
+      });
+    }, 500);
+    const writeLine = (payload: unknown) => runtime.stdout.write(`${JSON.stringify(payload)}\n`);
+    try {
+      for (const thread of result.threads) {
+        writeLine({ ok: true, source: "open", thread });
+      }
+      for await (const event of client.streamDraftReviewEvents({
+        sessionId,
+        cursor: "latest",
+        signal: abortController.signal,
+      })) {
+        if (!isWaitCommentMatch({ event, includeReplies: options.includeReplies, filePath })) {
+          continue;
+        }
+        writeLine({
+          ok: true,
+          source: "event",
+          event,
+          thread: event.thread,
+        });
+      }
+    } catch (error) {
+      if (!abortController.signal.aborted) {
+        throw error;
+      }
+    } finally {
+      clearInterval(stopTimer);
+    }
+    writeLine({ ok: true, stopped: true, stopFile: stopPath });
+    return;
+  }
+
   const format = options.json ? "json" : (options.format ?? "text");
   if (format === "json") {
     writeJson(runtime.stdout, { ok: true, threads: result.threads });

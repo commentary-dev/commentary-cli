@@ -14,6 +14,7 @@ import {
   sessionsCommand,
   statusCommand,
   syncCommand,
+  trackCommand,
   watchCommand,
   waitCommentCommand,
   whoamiCommand,
@@ -269,6 +270,41 @@ export function buildProgram(runtime: CommandRuntime) {
     });
 
   program
+    .command("track")
+    .description("Add files to the linked draft review and upload a new revision.")
+    .argument("<paths...>")
+    .option("--message <summary>", "Revision summary shown in Commentary.")
+    .addOption(
+      new Option("--content-type <type>", "Content type")
+        .choices(["auto", "markdown", "html", "plain_text"])
+        .default("auto"),
+    )
+    .option(
+      "--include <glob>",
+      "Include glob for directory tracking. May be repeated.",
+      collectOption,
+    )
+    .option(
+      "--exclude <glob>",
+      "Exclude glob for directory tracking. May be repeated.",
+      collectOption,
+    )
+    .option("--dry-run", "Print files that would be tracked without uploading a revision.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Merges new paths with existing tracked files, uploads a full revision, and updates .commentary/session.json.",
+        [
+          'commentary track docs/new-page.md --message "Add docs page"',
+          'commentary track docs --include "**/*.md" --dry-run --json',
+        ],
+      ),
+    )
+    .action(async function (this: Command, paths: string[]) {
+      await trackCommand(runtime, paths, { ...globalOptions(this), ...this.opts() });
+    });
+
+  program
     .command("watch")
     .description("Watch tracked files and sync revisions.")
     .option("--debounce <ms>", "Milliseconds to wait after a file event before syncing.", "1500")
@@ -297,6 +333,18 @@ export function buildProgram(runtime: CommandRuntime) {
     .option("--all", "Show open and resolved threads.")
     .option("--file <path>", "Filter by review file path, e.g. docs/spec.md.")
     .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--watch", "Stream open and future comment events as JSON lines until stopped.")
+    .option("--jsonl", "Use newline-delimited JSON output for watch mode.")
+    .option("--stop-file <path>", "Stop-file path for --watch or --stop.")
+    .option("--stop", "Request a running comments --watch process to stop.")
+    .option(
+      "--include-replies",
+      "Return reply.created events in watch mode. This is enabled by default.",
+    )
+    .option(
+      "--no-include-replies",
+      "Ignore reply.created events in watch mode and stream only new top-level comments.",
+    )
     .addHelpText(
       "after",
       helpText(
@@ -306,6 +354,8 @@ export function buildProgram(runtime: CommandRuntime) {
           "commentary comments --all --json",
           "commentary comments --file docs/spec.md --format text",
           "commentary comments --session draft_123 --json",
+          "commentary comments --watch --jsonl",
+          "commentary comments --stop",
         ],
       ),
     )

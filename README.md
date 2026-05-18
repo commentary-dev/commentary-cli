@@ -13,6 +13,7 @@ commentary review ./docs/spec.md
 ## What It Does
 
 - Creates private Commentary draft reviews from local files or folders.
+- Adds new files to existing draft reviews.
 - Uploads new revisions after local edits.
 - Watches tracked files and syncs changes.
 - Lists comments in text, Markdown, or JSON.
@@ -83,6 +84,12 @@ Upload a new revision:
 commentary sync --message "Address review comments"
 ```
 
+Add files to the existing review and upload a new revision:
+
+```bash
+commentary track ./docs/new-page.md --message "Add requested page"
+```
+
 Watch tracked files:
 
 ```bash
@@ -100,11 +107,18 @@ Return the next actionable review comment for an agent:
 
 ```bash
 commentary next-comment --json
-commentary next-comment --file docs/spec.md --timeout 15m
+commentary next-comment --file docs/spec.md --timeout 60s
 commentary next-comment --no-include-replies
 ```
 
 `next-comment` starts the live event stream, checks currently open threads, and waits only when nothing is open. Use `wait-comment` when you specifically want a future live event.
+
+For unattended listener processes, use cooperative stop-file support:
+
+```bash
+commentary comments --watch --jsonl
+commentary comments --stop
+```
 
 Update the GitHub base later:
 
@@ -141,6 +155,7 @@ commentary login
 commentary logout
 commentary whoami
 commentary review <paths...>
+commentary track <paths...>
 commentary sync
 commentary revision
 commentary rebase
@@ -244,10 +259,10 @@ App-side draft review limits are enforced before upload:
    commentary comments --format markdown --open
    ```
 
-5. For interactive review loops, the agent should use `next-comment` so it does not miss comments created while it was editing:
+5. For interactive review loops, the agent should use short bounded `next-comment` waits so it does not miss comments created while it was editing and can stop promptly when asked:
 
    ```bash
-   commentary next-comment --timeout 15m --json
+   commentary next-comment --timeout 60s --json
    ```
 
 6. The agent updates the local file.
@@ -258,6 +273,12 @@ App-side draft review limits are enforced before upload:
    ```
 
 8. Repeat until ready to commit locally with your own git tools.
+
+If a review comment asks for an additional file, add it to the existing review instead of creating a second review:
+
+```bash
+commentary track ./docs/new-page.md --message "Add requested page"
+```
 
 ## JSON Output
 
@@ -276,7 +297,9 @@ JSON output is intended to be stable across patch releases. Additive fields may 
 
 `commentary next-comment` and `commentary wait-comment` use Commentary draft-review live updates and require a server that exposes `GET /api/v1/draft-reviews/{sessionId}/events`. Tokens need the `commentary.comments.read` scope.
 
-For agent loops, prefer `commentary next-comment --timeout 15m --json`. It starts the live event stream, lists open threads, returns open threads immediately if any exist, and otherwise waits for the next matching event. This avoids relying on the live event stream as a substitute for checking open threads.
+For agent loops, prefer `commentary next-comment --timeout 60s --json`. It starts the live event stream, lists open threads, returns open threads immediately if any exist, and otherwise waits for the next matching event. Short bounded waits let an agent stop promptly when the user asks it to stop.
+
+For unattended listeners, use `commentary comments --watch --jsonl`. Stop a running listener with `commentary comments --stop`, or pass a custom `--stop-file <path>` to both commands.
 
 `commentary wait-comment` starts from `cursor=latest` by default, waits for a future `comment.created` or `reply.created` event, prints the first match, and exits. Replies are included by default so a human follow-up to an agent reply wakes the waiting agent. Use `--no-include-replies` to wait only for top-level comments, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely. If the event stream disconnects before a matching comment arrives, the CLI reconnects with the latest cursor it has seen.
 
