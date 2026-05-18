@@ -154,6 +154,98 @@ describe("CLI commands", () => {
     expect(synced.lastKnownRevision).toBe(2);
   });
 
+  it("tracks a new file in an existing review and uploads a full revision", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await mkdir(path.join(dir, "docs"), { recursive: true });
+    await writeFile(path.join(dir, "README.md"), "# Readme\n", "utf8");
+    await writeFile(path.join(dir, "docs/skill.md"), "# Skill\n", "utf8");
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [
+          {
+            path: "README.md",
+            fileId: "file_1",
+            contentType: "markdown",
+            contentHash: "remote_hash",
+            sizeBytes: 9,
+          },
+        ],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1/revisions");
+      const body = JSON.parse(String(init?.body));
+      expect(body.summary).toBe("Add skill page");
+      expect(body.files.map((file: { path: string }) => file.path)).toEqual([
+        "docs/skill.md",
+        "README.md",
+      ]);
+      expect(body.files.find((file: { path: string }) => file.path === "README.md").fileId).toBe(
+        "file_1",
+      );
+      expect(
+        body.files.find((file: { path: string }) => file.path === "docs/skill.md").fileId,
+      ).toBeUndefined();
+      return jsonResponse(
+        {
+          ok: true,
+          revision: {
+            id: "rev_2",
+            revisionNumber: 2,
+            files: [
+              {
+                fileId: "file_2",
+                path: "docs/skill.md",
+                contentType: "markdown",
+                contentHash: "remote_hash_2",
+                sizeBytes: 8,
+              },
+              {
+                fileId: "file_1",
+                path: "README.md",
+                contentType: "markdown",
+                contentHash: "remote_hash_1",
+                sizeBytes: 9,
+              },
+            ],
+          },
+        },
+        201,
+      );
+    });
+
+    const code = await runCli(
+      ["track", "docs/skill.md", "--message", "Add skill page", "--token", "token", "--json"],
+      {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      },
+    );
+
+    expect(code).toBe(0);
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.lastKnownRevision).toBe(2);
+    expect(metadata.trackedFiles.map((file: { path: string }) => file.path)).toEqual([
+      "docs/skill.md",
+      "README.md",
+    ]);
+    expect(metadata.trackedFiles[0].fileId).toBe("file_2");
+  });
+
   it("creates a review with explicit GitHub base metadata without storing it locally", async () => {
     await writeFile(path.join(dir, "spec.md"), "# Spec\n", "utf8");
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -555,6 +647,117 @@ describe("CLI commands", () => {
     expect(payload.source).toBe("event");
     expect(payload.event.id).toBe("event_1");
     expect(payload.threads[0].id).toBe("thread_1");
+  });
+
+  it("next-comment can use a short bounded timeout", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/events?cursor=latest")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      }
+      if (requestUrl.endsWith("/comments?status=open")) {
+        return Promise.resolve(jsonResponse({ ok: true, threads: [] }));
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["next-comment", "--timeout", "1ms", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(124);
+    expect(errors).toContain("Timed out waiting for a draft review comment.");
+  });
+
+  it("streams comments in watch mode until a stop file is written", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const stopFile = path.join(dir, ".commentary/stop-listening");
+    const fetchImpl = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/comments?status=open")) {
+        return Promise.resolve(
+          jsonResponse({
+            ok: true,
+            threads: [
+              {
+                id: "thread_1",
+                fileId: "file_1",
+                filePath: "README.md",
+                status: "open",
+                comments: [{ authorLogin: "user", bodyMarkdown: "Please clarify." }],
+              },
+            ],
+          }),
+        );
+      }
+      if (requestUrl.endsWith("/events?cursor=latest")) {
+        void writeFile(stopFile, "stop\n", "utf8");
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(["comments", "--watch", "--jsonl", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    const lines = output
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(lines[0].source).toBe("open");
+    expect(lines[0].thread.id).toBe("thread_1");
+    expect(lines.at(-1).stopped).toBe(true);
   });
 
   it("wait-comment returns reply events by default", async () => {
