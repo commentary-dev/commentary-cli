@@ -138,6 +138,70 @@ describe("CommentaryApiClient", () => {
     });
   });
 
+  it("manages draft review shares", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          shareLinks: [{ id: "share_1", url: "https://commentary.test/share/share_1" }],
+          accessGrants: [{ id: "grant_1", recipient: "reviewer@example.com" }],
+          shareLink: { id: "share_1", url: "https://commentary.test/share/share_1" },
+          accessGrant: { id: "grant_1", recipient: "reviewer@example.com" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = new CommentaryApiClient({
+      baseUrl: "https://commentary.test",
+      token: "token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.listDraftReviewShares("draft_1");
+    await client.shareDraftReview({ sessionId: "draft_1", audience: "anyone" });
+    await client.shareDraftReview({
+      sessionId: "draft_1",
+      audience: "user",
+      recipient: "reviewer@example.com",
+    });
+    await client.revokeDraftReviewShare({ sessionId: "draft_1", shareLinkId: "share_1" });
+    await client.removeDraftReviewAccess({ sessionId: "draft_1", accessGrantId: "grant_1" });
+
+    expect(requests).toEqual([
+      {
+        url: "https://commentary.test/api/v1/draft-reviews/draft_1/shares",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://commentary.test/api/v1/draft-reviews/draft_1/shares",
+        method: "POST",
+        body: { audience: "anyone" },
+      },
+      {
+        url: "https://commentary.test/api/v1/draft-reviews/draft_1/shares",
+        method: "POST",
+        body: { audience: "user", recipient: "reviewer@example.com" },
+      },
+      {
+        url: "https://commentary.test/api/v1/draft-reviews/draft_1/shares/share_1",
+        method: "DELETE",
+        body: undefined,
+      },
+      {
+        url: "https://commentary.test/api/v1/draft-reviews/draft_1/access-grants/grant_1",
+        method: "DELETE",
+        body: undefined,
+      },
+    ]);
+  });
+
   it("turns API errors into actionable errors", async () => {
     const fetchImpl = vi.fn(
       async () =>

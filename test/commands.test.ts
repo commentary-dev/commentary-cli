@@ -411,6 +411,128 @@ describe("CLI commands", () => {
     });
   });
 
+  it("shares a draft review with an anyone link", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1/shares");
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(String(init?.body))).toEqual({ audience: "anyone" });
+      return jsonResponse({
+        ok: true,
+        shareLink: {
+          id: "share_1",
+          audience: "anyone",
+          url: "https://commentary.test/share/share_1",
+        },
+      });
+    });
+
+    const code = await runCli(["share", "--anyone", "--token", "token", "--json"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(output);
+    expect(payload.sessionId).toBe("draft_1");
+    expect(payload.shareLink.id).toBe("share_1");
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.shareLink).toBeUndefined();
+  });
+
+  it("lists and removes draft review share access", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const requests: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push(`${init?.method ?? "GET"} ${requestUrl}`);
+      if (requestUrl.endsWith("/shares") && init?.method === "GET") {
+        return jsonResponse({
+          ok: true,
+          shareLinks: [{ id: "share_1", url: "https://commentary.test/share/share_1" }],
+          accessGrants: [{ id: "grant_1", recipient: "reviewer@example.com" }],
+        });
+      }
+      if (requestUrl.endsWith("/shares/share_1") && init?.method === "DELETE") {
+        return jsonResponse({ ok: true });
+      }
+      if (requestUrl.endsWith("/access-grants/grant_1") && init?.method === "DELETE") {
+        return jsonResponse({ ok: true });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const listCode = await runCli(["share", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+    expect(listCode).toBe(0);
+    expect(output).toContain("share_1");
+    output = "";
+
+    const revokeCode = await runCli(["share", "--revoke-link", "share_1", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+    expect(revokeCode).toBe(0);
+    output = "";
+
+    const removeCode = await runCli(["share", "--remove-access", "grant_1", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+    expect(removeCode).toBe(0);
+    expect(requests).toEqual([
+      "GET https://commentary.test/api/v1/draft-reviews/draft_1/shares",
+      "DELETE https://commentary.test/api/v1/draft-reviews/draft_1/shares/share_1",
+      "DELETE https://commentary.test/api/v1/draft-reviews/draft_1/access-grants/grant_1",
+    ]);
+  });
+
   it("formats comments as markdown", async () => {
     await mkdir(path.join(dir, ".commentary"), { recursive: true });
     await writeFile(

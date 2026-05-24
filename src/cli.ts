@@ -12,6 +12,7 @@ import {
   reviewCommand,
   revisionsCommand,
   sessionsCommand,
+  shareCommand,
   statusCommand,
   syncCommand,
   trackCommand,
@@ -435,6 +436,32 @@ export function buildProgram(runtime: CommandRuntime) {
     )
     .action(async function (this: Command) {
       await nextCommentCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  program
+    .command("share")
+    .description("Share the linked draft review or manage existing access.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--list", "List existing share links and user access grants. This is the default.")
+    .option("--anyone", "Create or return a share link for anyone with the URL.")
+    .option("--user <recipient>", "Grant access to a specific user or email address.")
+    .option("--revoke-link <id>", "Revoke an anyone share link by id.")
+    .option("--remove-access <id>", "Remove a user access grant by id.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Uses the draft-review sharing API. Share data is kept in Commentary, not local session metadata.",
+        [
+          "commentary share --anyone",
+          "commentary share --user reviewer@example.com",
+          "commentary share --list --json",
+          "commentary share --revoke-link share_123",
+          "commentary share --remove-access grant_123",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await shareCommand(runtime, { ...globalOptions(this), ...this.opts() });
     });
 
   program

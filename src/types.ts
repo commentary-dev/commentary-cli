@@ -49,6 +49,28 @@ export type DraftReviewGitBaseMetadata = {
   metadata?: JsonObject | null;
 };
 
+export type DraftReviewShareAudience = "anyone" | "user";
+
+export type DraftReviewShareLink = {
+  id: string;
+  audience?: DraftReviewShareAudience;
+  url?: string | null;
+  shareUrl?: string | null;
+  recipient?: string | null;
+  createdAt?: string;
+  revokedAt?: string | null;
+  expiresAt?: string | null;
+};
+
+export type DraftReviewAccessGrant = {
+  id: string;
+  recipient?: string | null;
+  email?: string | null;
+  userId?: string | null;
+  createdAt?: string;
+  revokedAt?: string | null;
+};
+
 export type DraftReviewSession = {
   id: string;
   title: string;

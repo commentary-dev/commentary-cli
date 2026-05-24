@@ -19,6 +19,7 @@ commentary review ./docs/spec.md
 - Lists comments in text, Markdown, or JSON.
 - Returns currently open comments or waits for the next live draft-review comment event for local agent loops.
 - Replies to and resolves comments.
+- Shares draft reviews with anyone who has a link or grants access to a specific user.
 - Links a single-file draft review to a GitHub base commit through the Commentary API.
 - Pulls latest reviewed content back to disk with overwrite safeguards.
 - Opens the review URL in the browser when available.
@@ -134,6 +135,14 @@ commentary reply <thread-id> "Updated this in revision 3." --alias "Docs agent"
 commentary resolve <thread-id> --message "Addressed in revision 3." --alias "Docs agent"
 ```
 
+Share a review:
+
+```bash
+commentary share --anyone
+commentary share --user reviewer@example.com
+commentary share --list
+```
+
 Pull latest reviewed content safely:
 
 ```bash
@@ -165,6 +174,7 @@ commentary next-comment
 commentary wait-comment
 commentary reply <thread-id> <message>
 commentary resolve <thread-id>
+commentary share
 commentary pull
 commentary open
 commentary status
@@ -316,6 +326,12 @@ commentary rebase --git-base-repo commentary-dev/commentary-docs --git-base-sha 
 ```
 
 The CLI sends this metadata to the Commentary API as `gitBase`. It is not stored in `.commentary/session.json`, and it does not create branches, commits, pull requests, provider reviews, or GitHub tokens. `commentary revisions` lists uploaded local draft revisions; the GitHub base is server-side comparison metadata, not a local revision row.
+
+## Sharing Reviews
+
+Use `commentary share --anyone` to create or return a share link, or `commentary share --user <recipient>` to grant access to a specific user. `commentary share` and `commentary share --list` show current share links and user access grants. Revoke access with `--revoke-link <shareLinkId>` or `--remove-access <accessGrantId>`.
+
+Sharing state is stored by the Commentary API. The CLI does not write share links, recipients, or access grants to `.commentary/session.json`.
 
 ## Heading Anchors
 

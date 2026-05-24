@@ -27,6 +27,8 @@ import {
   formatCommentsMarkdown,
   formatCommentsText,
   formatDraftRebased,
+  formatDraftReviewShared,
+  formatDraftReviewShares,
   formatGitBase,
   formatReviewCreated,
   formatRevision,
@@ -1051,6 +1053,123 @@ export async function rebaseCommand(
     });
   } else {
     writeText(runtime.stdout, formatDraftRebased({ draftReview: result.draftReview }));
+  }
+}
+
+export async function shareCommand(
+  runtime: CommandRuntime,
+  options: GlobalOptions & {
+    session?: string;
+    list?: boolean;
+    anyone?: boolean;
+    user?: string;
+    revokeLink?: string;
+    removeAccess?: string;
+  },
+) {
+  const loaded = options.session ? null : await loadSession(runtime, options);
+  const sessionId = options.session ?? loaded?.metadata.reviewSessionId;
+  if (!sessionId) {
+    throw new CliError("A session id is required.", ExitCode.Usage);
+  }
+
+  const actions = [
+    Boolean(options.list),
+    Boolean(options.anyone),
+    Boolean(options.user),
+    Boolean(options.revokeLink),
+    Boolean(options.removeAccess),
+  ].filter(Boolean).length;
+  if (actions > 1) {
+    throw new CliError(
+      "Use only one share action: --list, --anyone, --user, --revoke-link, or --remove-access.",
+      ExitCode.Usage,
+    );
+  }
+
+  const client = await makeClient(runtime, {
+    ...options,
+    baseUrl: loaded?.metadata.baseUrl ?? options.baseUrl,
+  });
+
+  if (options.anyone) {
+    const result = await client.shareDraftReview({ sessionId, audience: "anyone" });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, ...result });
+    } else {
+      writeText(
+        runtime.stdout,
+        formatDraftReviewShared({
+          sessionId,
+          shareLink: result.shareLink,
+          accessGrant: result.accessGrant,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (options.user) {
+    const recipient = options.user.trim();
+    if (!recipient) {
+      throw new CliError("--user requires a recipient.", ExitCode.Usage);
+    }
+    const result = await client.shareDraftReview({ sessionId, audience: "user", recipient });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, ...result });
+    } else {
+      writeText(
+        runtime.stdout,
+        formatDraftReviewShared({
+          sessionId,
+          shareLink: result.shareLink,
+          accessGrant: result.accessGrant,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (options.revokeLink) {
+    const shareLinkId = options.revokeLink.trim();
+    if (!shareLinkId) {
+      throw new CliError("--revoke-link requires a share link id.", ExitCode.Usage);
+    }
+    const result = await client.revokeDraftReviewShare({ sessionId, shareLinkId });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, shareLinkId, ...result });
+    } else {
+      writeText(runtime.stdout, `Revoked share link ${shareLinkId}.`);
+    }
+    return;
+  }
+
+  if (options.removeAccess) {
+    const accessGrantId = options.removeAccess.trim();
+    if (!accessGrantId) {
+      throw new CliError("--remove-access requires an access grant id.", ExitCode.Usage);
+    }
+    const result = await client.removeDraftReviewAccess({ sessionId, accessGrantId });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, accessGrantId, ...result });
+    } else {
+      writeText(runtime.stdout, `Removed access grant ${accessGrantId}.`);
+    }
+    return;
+  }
+
+  const result = await client.listDraftReviewShares(sessionId);
+  if (options.json) {
+    writeJson(runtime.stdout, { sessionId, ...result });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatDraftReviewShares({
+        sessionId,
+        shareLinks: result.shareLinks,
+        accessGrants: result.accessGrants,
+      }),
+    );
   }
 }
 
