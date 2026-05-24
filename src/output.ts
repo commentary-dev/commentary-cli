@@ -40,6 +40,39 @@ export function formatReviewCreated(input: {
   ].join("\n");
 }
 
+export function formatReviewRestored(input: {
+  metadata: SessionMetadata;
+  sessionFilePath: string;
+  changedFiles: string[];
+  synced: boolean;
+  dryRun?: boolean | undefined;
+  noSync?: boolean | undefined;
+  revision?: DraftReviewRevision | undefined;
+}) {
+  const status = input.dryRun
+    ? input.noSync
+      ? "Would restore local session metadata without syncing"
+      : input.changedFiles.length > 0
+        ? "Would restore local session metadata and sync changes"
+        : "Would restore local session metadata; no sync needed"
+    : "Restored Commentary review";
+  const lines = [
+    status,
+    "",
+    `Session: ${input.metadata.reviewSessionId}`,
+    `Files: ${input.metadata.trackedFiles.length}`,
+    `Changed files: ${input.changedFiles.length ? input.changedFiles.join(", ") : "none"}`,
+    input.revision ? `Revision: ${input.revision.revisionNumber}` : null,
+    input.noSync && input.changedFiles.length > 0 ? "Sync: skipped by --no-sync" : null,
+    `URL: ${input.metadata.reviewUrl}`,
+    "",
+    input.dryRun
+      ? `Would save local session metadata to ${input.sessionFilePath}`
+      : `Saved local session metadata to ${input.sessionFilePath}`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
 export function formatGitBase(gitBase: DraftReviewGitBaseMetadata | null | undefined) {
   if (!gitBase) {
     return "none";

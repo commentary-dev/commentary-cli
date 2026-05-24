@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli.js";
+import { contentHash } from "../src/hash.js";
 
 let dir: string;
 let output: string;
@@ -152,6 +153,291 @@ describe("CLI commands", () => {
     expect(syncCode).toBe(0);
     const synced = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
     expect(synced.lastKnownRevision).toBe(2);
+  });
+
+  it("restores a review session and syncs changed local files", async () => {
+    await mkdir(path.join(dir, "docs"), { recursive: true });
+    await writeFile(path.join(dir, "docs/spec.md"), "# Local\n", "utf8");
+    const localHash = contentHash("# Local\n");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/v1/draft-reviews/draft_1") && init?.method === "GET") {
+        return jsonResponse({
+          ok: true,
+          draftReview: {
+            id: "draft_1",
+            title: "Spec",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            files: [{ id: "file_1", path: "docs/spec.md", contentType: "markdown" }],
+            latestRevision: {
+              id: "rev_1",
+              revisionNumber: 1,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "docs/spec.md",
+                  contentType: "markdown",
+                  contentHash: "remote_hash",
+                  sizeBytes: 9,
+                },
+              ],
+            },
+          },
+        });
+      }
+      if (
+        requestUrl.endsWith("/api/v1/draft-reviews/draft_1/revisions") &&
+        init?.method === "POST"
+      ) {
+        const body = JSON.parse(String(init.body));
+        expect(body.summary).toBe("Restore local session");
+        expect(body.files).toMatchObject([
+          {
+            fileId: "file_1",
+            path: "docs/spec.md",
+            content: "# Local\n",
+            contentType: "markdown",
+          },
+        ]);
+        return jsonResponse(
+          {
+            ok: true,
+            revision: {
+              id: "rev_2",
+              revisionNumber: 2,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "docs/spec.md",
+                  contentType: "markdown",
+                  contentHash: localHash,
+                  sizeBytes: 8,
+                },
+              ],
+            },
+          },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(
+      ["restore", "draft_1", "--base-url", "https://commentary.test", "--token", "token", "--json"],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(output);
+    expect(payload.synced).toBe(true);
+    expect(payload.changedFiles).toEqual(["docs/spec.md"]);
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.reviewSessionId).toBe("draft_1");
+    expect(metadata.rootPath).toBe("..");
+    expect(metadata.trackedFiles[0].fileId).toBe("file_1");
+    expect(metadata.trackedFiles[0].contentHash).toBe(localHash);
+    expect(metadata.lastKnownRevision).toBe(2);
+  });
+
+  it("restores a review session without uploading when local hashes match", async () => {
+    await writeFile(path.join(dir, "spec.md"), "# Spec\n", "utf8");
+    const hash = contentHash("# Spec\n");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/v1/draft-reviews/draft_1") && init?.method === "GET") {
+        return jsonResponse({
+          ok: true,
+          draftReview: {
+            id: "draft_1",
+            title: "Spec",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            files: [{ id: "file_1", path: "spec.md", contentType: "markdown" }],
+            latestRevision: {
+              id: "rev_1",
+              revisionNumber: 1,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "spec.md",
+                  contentType: "markdown",
+                  contentHash: hash,
+                  sizeBytes: 7,
+                },
+              ],
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(
+      ["restore", "draft_1", "--base-url", "https://commentary.test", "--token", "token", "--json"],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output).synced).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.lastKnownRevision).toBe(1);
+    expect(metadata.trackedFiles[0].contentHash).toBe(hash);
+  });
+
+  it("does not restore when reviewed local files are missing", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1");
+      expect(init?.method).toBe("GET");
+      return jsonResponse({
+        ok: true,
+        draftReview: {
+          id: "draft_1",
+          title: "Spec",
+          reviewUrl: "https://commentary.test/review/draft/draft_1",
+          files: [{ id: "file_1", path: "missing.md", contentType: "markdown" }],
+          latestRevision: {
+            id: "rev_1",
+            revisionNumber: 1,
+            files: [
+              {
+                fileId: "file_1",
+                path: "missing.md",
+                contentType: "markdown",
+                contentHash: "remote_hash",
+                sizeBytes: 7,
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    const code = await runCli(
+      ["restore", "draft_1", "--base-url", "https://commentary.test", "--token", "token"],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(2);
+    expect(errors).toContain("missing.md");
+    await expect(readFile(path.join(dir, ".commentary/session.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("requires --yes before replacing existing session metadata during restore", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(path.join(dir, ".commentary/session.json"), "{}\n", "utf8");
+    const fetchImpl = vi.fn();
+
+    const code = await runCli(
+      ["restore", "draft_1", "--base-url", "https://commentary.test", "--token", "token"],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(6);
+    expect(errors).toContain("Rerun with --yes");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("dry-runs restore without writing metadata or uploading", async () => {
+    await writeFile(path.join(dir, "spec.md"), "# Local\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1");
+      expect(init?.method).toBe("GET");
+      return jsonResponse({
+        ok: true,
+        draftReview: {
+          id: "draft_1",
+          title: "Spec",
+          reviewUrl: "https://commentary.test/review/draft/draft_1",
+          files: [{ id: "file_1", path: "spec.md", contentType: "markdown" }],
+          latestRevision: {
+            id: "rev_1",
+            revisionNumber: 1,
+            files: [
+              {
+                fileId: "file_1",
+                path: "spec.md",
+                contentType: "markdown",
+                contentHash: "remote_hash",
+                sizeBytes: 7,
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    const code = await runCli(
+      [
+        "restore",
+        "draft_1",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+        "--dry-run",
+        "--json",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(output);
+    expect(payload.dryRun).toBe(true);
+    expect(payload.changedFiles).toEqual(["spec.md"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(readFile(path.join(dir, ".commentary/session.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("restores metadata without uploading when --no-sync is passed", async () => {
+    await writeFile(path.join(dir, "spec.md"), "# Local\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1");
+      expect(init?.method).toBe("GET");
+      return jsonResponse({
+        ok: true,
+        draftReview: {
+          id: "draft_1",
+          title: "Spec",
+          reviewUrl: "https://commentary.test/review/draft/draft_1",
+          files: [{ id: "file_1", path: "spec.md", contentType: "markdown" }],
+          latestRevision: {
+            id: "rev_1",
+            revisionNumber: 1,
+            files: [
+              {
+                fileId: "file_1",
+                path: "spec.md",
+                contentType: "markdown",
+                contentHash: "remote_hash",
+                sizeBytes: 7,
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    const code = await runCli(
+      [
+        "restore",
+        "draft_1",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+        "--no-sync",
+        "--json",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(output);
+    expect(payload.synced).toBe(false);
+    expect(payload.changedFiles).toEqual(["spec.md"]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const metadata = JSON.parse(await readFile(path.join(dir, ".commentary/session.json"), "utf8"));
+    expect(metadata.trackedFiles[0].contentHash).toBe("remote_hash");
   });
 
   it("tracks a new file in an existing review and uploads a full revision", async () => {

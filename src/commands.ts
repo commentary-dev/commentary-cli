@@ -31,6 +31,7 @@ import {
   formatDraftReviewShares,
   formatGitBase,
   formatReviewCreated,
+  formatReviewRestored,
   formatRevision,
   formatWaitCommentMarkdown,
   formatWaitCommentText,
@@ -50,6 +51,7 @@ import type {
   DraftReviewLiveEvent,
   DraftReviewGitBaseMetadata,
   DraftReviewRevision,
+  DraftReviewSession,
   DraftThread,
   RequestedContentType,
   SessionMetadata,
@@ -240,6 +242,35 @@ async function fileExists(filePath: string) {
   } catch {
     return false;
   }
+}
+
+function trackedFilesFromDraftReview(draftReview: DraftReviewSession): TrackedFile[] {
+  if (draftReview.latestRevision) {
+    return draftReview.latestRevision.files.map((file) => ({
+      path: file.path,
+      fileId: file.fileId,
+      contentType: file.contentType,
+      contentHash: file.contentHash,
+      sizeBytes: file.sizeBytes,
+    }));
+  }
+  return draftReview.files.map((file) => ({
+    path: file.path,
+    fileId: file.id,
+    contentType: file.contentType,
+    contentHash: "",
+    sizeBytes: 0,
+  }));
+}
+
+async function missingTrackedFiles(root: string, trackedFiles: TrackedFile[]) {
+  const missing: string[] = [];
+  for (const file of trackedFiles) {
+    if (!(await fileExists(path.resolve(root, file.path)))) {
+      missing.push(file.path);
+    }
+  }
+  return missing;
 }
 
 function isWaitCommentMatch(input: {
@@ -530,6 +561,124 @@ export async function reviewCommand(
   }
   if (options.watch) {
     await watchCommand(runtime, { ...options, sessionFile: sessionFilePath });
+  }
+}
+
+export async function restoreCommand(
+  runtime: CommandRuntime,
+  sessionId: string,
+  options: GlobalOptions & {
+    yes?: boolean;
+    dryRun?: boolean;
+    sync?: boolean;
+  },
+) {
+  const sessionFilePath = await findSessionFile(runtime.cwd, options.sessionFile);
+  if ((await fileExists(sessionFilePath)) && !options.yes) {
+    throw new CliError(
+      `Session metadata already exists at ${sessionFilePath}. Rerun with --yes to replace it.`,
+      ExitCode.Safety,
+    );
+  }
+
+  const client = await makeClient(runtime, options);
+  const result = await client.getDraftReview(sessionId);
+  const trackedFiles = trackedFilesFromDraftReview(result.draftReview);
+  if (trackedFiles.length === 0) {
+    throw new CliError("Draft review has no files to restore.", ExitCode.Usage);
+  }
+  const missing = await missingTrackedFiles(runtime.cwd, trackedFiles);
+  if (missing.length > 0) {
+    throw new CliError(
+      `Cannot restore because local file(s) are missing: ${missing.join(", ")}`,
+      ExitCode.Usage,
+    );
+  }
+
+  const now = nowIso();
+  const metadata: SessionMetadata = {
+    version: 1,
+    reviewSessionId: result.draftReview.id,
+    reviewUrl: result.draftReview.reviewUrl,
+    baseUrl: client.baseUrl,
+    rootPath: path.relative(path.dirname(sessionFilePath), runtime.cwd) || ".",
+    trackedFiles,
+    source: ["restore", sessionId],
+    createdAt: now,
+    lastSyncedAt: now,
+    lastKnownRevision: result.draftReview.latestRevision?.revisionNumber ?? null,
+  };
+  const current = await readTrackedFiles(runtime.cwd, trackedFiles);
+  const changedLocalFiles = changedFiles(current, trackedFiles);
+  let nextMetadata = metadata;
+  let revision: DraftReviewRevision | undefined;
+  const shouldSync = options.sync !== false && changedLocalFiles.length > 0;
+
+  if (options.dryRun) {
+    const payload = {
+      ok: true,
+      dryRun: true,
+      sessionFilePath,
+      session: publicSessionJson(metadata),
+      synced: false,
+      changedFiles: changedLocalFiles.map((file) => file.path),
+    };
+    if (options.json) {
+      writeJson(runtime.stdout, payload);
+    } else {
+      writeText(
+        runtime.stdout,
+        formatReviewRestored({
+          metadata,
+          sessionFilePath,
+          changedFiles: payload.changedFiles,
+          synced: false,
+          dryRun: true,
+          noSync: options.sync === false,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (shouldSync) {
+    const syncResult = await client.createRevision({
+      sessionId: metadata.reviewSessionId,
+      summary: "Restore local session",
+      files: current,
+    });
+    revision = syncResult.revision;
+    nextMetadata = {
+      ...metadata,
+      trackedFiles: toTrackedFiles(current, apiFilesFromRevision(syncResult.revision)),
+      lastSyncedAt: nowIso(),
+      lastKnownRevision: syncResult.revision.revisionNumber,
+    };
+  }
+
+  await saveSessionMetadata(sessionFilePath, nextMetadata);
+  const changedFilePaths = changedLocalFiles.map((file) => file.path);
+  if (options.json) {
+    writeJson(runtime.stdout, {
+      ok: true,
+      sessionFilePath,
+      session: publicSessionJson(nextMetadata),
+      synced: shouldSync,
+      changedFiles: changedFilePaths,
+      ...(revision ? { revision } : {}),
+    });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatReviewRestored({
+        metadata: nextMetadata,
+        sessionFilePath,
+        changedFiles: changedFilePaths,
+        synced: shouldSync,
+        noSync: options.sync === false,
+        revision,
+      }),
+    );
   }
 }
 

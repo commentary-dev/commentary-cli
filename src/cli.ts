@@ -9,6 +9,7 @@ import {
   rebaseCommand,
   replyCommand,
   resolveCommand,
+  restoreCommand,
   reviewCommand,
   revisionsCommand,
   sessionsCommand,
@@ -162,6 +163,29 @@ export function buildProgram(runtime: CommandRuntime) {
       ]),
     )
     .action(wrap(runtime, (options) => whoamiCommand(runtime, options)));
+
+  program
+    .command("restore")
+    .description("Restore local session metadata for an existing draft review.")
+    .argument("<session-id>")
+    .option("--yes", "Replace existing local session metadata.")
+    .option("--dry-run", "Show what would be restored without writing metadata or syncing.")
+    .option("--no-sync", "Restore metadata without uploading changed local files.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Recreates .commentary/session.json from review metadata, then syncs changed local files from the current directory.",
+        [
+          "commentary restore draft_123",
+          "commentary restore draft_123 --dry-run --json",
+          "commentary restore draft_123 --yes",
+          "commentary restore draft_123 --no-sync",
+        ],
+      ),
+    )
+    .action(async function (this: Command, sessionId: string) {
+      await restoreCommand(runtime, sessionId, { ...globalOptions(this), ...this.opts() });
+    });
 
   program
     .command("review")

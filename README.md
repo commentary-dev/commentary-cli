@@ -13,6 +13,7 @@ commentary review ./docs/spec.md
 ## What It Does
 
 - Creates private Commentary draft reviews from local files or folders.
+- Restores local session metadata from existing draft reviews.
 - Adds new files to existing draft reviews.
 - Uploads new revisions after local edits.
 - Watches tracked files and syncs changes.
@@ -83,6 +84,14 @@ Upload a new revision:
 
 ```bash
 commentary sync --message "Address review comments"
+```
+
+Restore a previous review into the current directory and sync changed local files:
+
+```bash
+commentary restore draft_123
+commentary restore draft_123 --dry-run --json
+commentary restore draft_123 --yes
 ```
 
 Add files to the existing review and upload a new revision:
@@ -164,6 +173,7 @@ commentary login
 commentary logout
 commentary whoami
 commentary review <paths...>
+commentary restore <session-id>
 commentary track <paths...>
 commentary sync
 commentary revision
@@ -326,6 +336,12 @@ commentary rebase --git-base-repo commentary-dev/commentary-docs --git-base-sha 
 ```
 
 The CLI sends this metadata to the Commentary API as `gitBase`. It is not stored in `.commentary/session.json`, and it does not create branches, commits, pull requests, provider reviews, or GitHub tokens. `commentary revisions` lists uploaded local draft revisions; the GitHub base is server-side comparison metadata, not a local revision row.
+
+## Restoring Local State
+
+Use `commentary restore <session-id>` when a previous draft review exists but local `.commentary/session.json` is missing. Restore reads review-relative file metadata from Commentary, writes local session metadata under the current directory, and uploads a new revision when local file hashes differ from the review's latest revision.
+
+Restore never stores local absolute paths on the server. The current directory becomes the local review root. If a session file already exists, pass `--yes` to replace it. Use `--dry-run` to preview and `--no-sync` to write metadata without uploading changed local files.
 
 ## Sharing Reviews
 
