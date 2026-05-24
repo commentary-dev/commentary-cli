@@ -1,10 +1,13 @@
 import { CliError, ExitCode } from "./errors.js";
 import { SseParser } from "./sse.js";
 import type {
+  DraftReviewAccessGrant,
   DraftFileInput,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
   DraftReviewRevision,
+  DraftReviewShareAudience,
+  DraftReviewShareLink,
   DraftReviewSession,
   DraftThread,
 } from "./types.js";
@@ -167,6 +170,46 @@ export class CommentaryApiClient {
   async listRevisions(sessionId: string) {
     return this.request<{ ok: true; revisions: DraftReviewRevision[] }>(
       `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/revisions`,
+    );
+  }
+
+  async listDraftReviewShares(sessionId: string) {
+    return this.request<{
+      ok: true;
+      shareLinks: DraftReviewShareLink[];
+      accessGrants: DraftReviewAccessGrant[];
+    }>(`/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/shares`);
+  }
+
+  async shareDraftReview(input: {
+    sessionId: string;
+    audience: DraftReviewShareAudience;
+    recipient?: string | undefined;
+  }) {
+    return this.request<{
+      ok: true;
+      shareLink?: DraftReviewShareLink;
+      accessGrant?: DraftReviewAccessGrant;
+    }>(`/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/shares`, {
+      method: "POST",
+      body: {
+        audience: input.audience,
+        ...(input.recipient ? { recipient: input.recipient } : {}),
+      },
+    });
+  }
+
+  async revokeDraftReviewShare(input: { sessionId: string; shareLinkId: string }) {
+    return this.request<{ ok: true }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/shares/${encodeURIComponent(input.shareLinkId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async removeDraftReviewAccess(input: { sessionId: string; accessGrantId: string }) {
+    return this.request<{ ok: true }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/access-grants/${encodeURIComponent(input.accessGrantId)}`,
+      { method: "DELETE" },
     );
   }
 

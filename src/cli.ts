@@ -9,9 +9,11 @@ import {
   rebaseCommand,
   replyCommand,
   resolveCommand,
+  restoreCommand,
   reviewCommand,
   revisionsCommand,
   sessionsCommand,
+  shareCommand,
   statusCommand,
   syncCommand,
   trackCommand,
@@ -161,6 +163,29 @@ export function buildProgram(runtime: CommandRuntime) {
       ]),
     )
     .action(wrap(runtime, (options) => whoamiCommand(runtime, options)));
+
+  program
+    .command("restore")
+    .description("Restore local session metadata for an existing draft review.")
+    .argument("<session-id>")
+    .option("--yes", "Replace existing local session metadata.")
+    .option("--dry-run", "Show what would be restored without writing metadata or syncing.")
+    .option("--no-sync", "Restore metadata without uploading changed local files.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Recreates .commentary/session.json from review metadata, then syncs changed local files from the current directory.",
+        [
+          "commentary restore draft_123",
+          "commentary restore draft_123 --dry-run --json",
+          "commentary restore draft_123 --yes",
+          "commentary restore draft_123 --no-sync",
+        ],
+      ),
+    )
+    .action(async function (this: Command, sessionId: string) {
+      await restoreCommand(runtime, sessionId, { ...globalOptions(this), ...this.opts() });
+    });
 
   program
     .command("review")
@@ -435,6 +460,32 @@ export function buildProgram(runtime: CommandRuntime) {
     )
     .action(async function (this: Command) {
       await nextCommentCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  program
+    .command("share")
+    .description("Share the linked draft review or manage existing access.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--list", "List existing share links and user access grants. This is the default.")
+    .option("--anyone", "Create or return a share link for anyone with the URL.")
+    .option("--user <recipient>", "Grant access to a specific user or email address.")
+    .option("--revoke-link <id>", "Revoke an anyone share link by id.")
+    .option("--remove-access <id>", "Remove a user access grant by id.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Uses the draft-review sharing API. Share data is kept in Commentary, not local session metadata.",
+        [
+          "commentary share --anyone",
+          "commentary share --user reviewer@example.com",
+          "commentary share --list --json",
+          "commentary share --revoke-link share_123",
+          "commentary share --remove-access grant_123",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await shareCommand(runtime, { ...globalOptions(this), ...this.opts() });
     });
 
   program

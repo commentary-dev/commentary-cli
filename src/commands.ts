@@ -27,8 +27,11 @@ import {
   formatCommentsMarkdown,
   formatCommentsText,
   formatDraftRebased,
+  formatDraftReviewShared,
+  formatDraftReviewShares,
   formatGitBase,
   formatReviewCreated,
+  formatReviewRestored,
   formatRevision,
   formatWaitCommentMarkdown,
   formatWaitCommentText,
@@ -48,6 +51,7 @@ import type {
   DraftReviewLiveEvent,
   DraftReviewGitBaseMetadata,
   DraftReviewRevision,
+  DraftReviewSession,
   DraftThread,
   RequestedContentType,
   SessionMetadata,
@@ -238,6 +242,35 @@ async function fileExists(filePath: string) {
   } catch {
     return false;
   }
+}
+
+function trackedFilesFromDraftReview(draftReview: DraftReviewSession): TrackedFile[] {
+  if (draftReview.latestRevision) {
+    return draftReview.latestRevision.files.map((file) => ({
+      path: file.path,
+      fileId: file.fileId,
+      contentType: file.contentType,
+      contentHash: file.contentHash,
+      sizeBytes: file.sizeBytes,
+    }));
+  }
+  return draftReview.files.map((file) => ({
+    path: file.path,
+    fileId: file.id,
+    contentType: file.contentType,
+    contentHash: "",
+    sizeBytes: 0,
+  }));
+}
+
+async function missingTrackedFiles(root: string, trackedFiles: TrackedFile[]) {
+  const missing: string[] = [];
+  for (const file of trackedFiles) {
+    if (!(await fileExists(path.resolve(root, file.path)))) {
+      missing.push(file.path);
+    }
+  }
+  return missing;
 }
 
 function isWaitCommentMatch(input: {
@@ -528,6 +561,124 @@ export async function reviewCommand(
   }
   if (options.watch) {
     await watchCommand(runtime, { ...options, sessionFile: sessionFilePath });
+  }
+}
+
+export async function restoreCommand(
+  runtime: CommandRuntime,
+  sessionId: string,
+  options: GlobalOptions & {
+    yes?: boolean;
+    dryRun?: boolean;
+    sync?: boolean;
+  },
+) {
+  const sessionFilePath = await findSessionFile(runtime.cwd, options.sessionFile);
+  if ((await fileExists(sessionFilePath)) && !options.yes) {
+    throw new CliError(
+      `Session metadata already exists at ${sessionFilePath}. Rerun with --yes to replace it.`,
+      ExitCode.Safety,
+    );
+  }
+
+  const client = await makeClient(runtime, options);
+  const result = await client.getDraftReview(sessionId);
+  const trackedFiles = trackedFilesFromDraftReview(result.draftReview);
+  if (trackedFiles.length === 0) {
+    throw new CliError("Draft review has no files to restore.", ExitCode.Usage);
+  }
+  const missing = await missingTrackedFiles(runtime.cwd, trackedFiles);
+  if (missing.length > 0) {
+    throw new CliError(
+      `Cannot restore because local file(s) are missing: ${missing.join(", ")}`,
+      ExitCode.Usage,
+    );
+  }
+
+  const now = nowIso();
+  const metadata: SessionMetadata = {
+    version: 1,
+    reviewSessionId: result.draftReview.id,
+    reviewUrl: result.draftReview.reviewUrl,
+    baseUrl: client.baseUrl,
+    rootPath: path.relative(path.dirname(sessionFilePath), runtime.cwd) || ".",
+    trackedFiles,
+    source: ["restore", sessionId],
+    createdAt: now,
+    lastSyncedAt: now,
+    lastKnownRevision: result.draftReview.latestRevision?.revisionNumber ?? null,
+  };
+  const current = await readTrackedFiles(runtime.cwd, trackedFiles);
+  const changedLocalFiles = changedFiles(current, trackedFiles);
+  let nextMetadata = metadata;
+  let revision: DraftReviewRevision | undefined;
+  const shouldSync = options.sync !== false && changedLocalFiles.length > 0;
+
+  if (options.dryRun) {
+    const payload = {
+      ok: true,
+      dryRun: true,
+      sessionFilePath,
+      session: publicSessionJson(metadata),
+      synced: false,
+      changedFiles: changedLocalFiles.map((file) => file.path),
+    };
+    if (options.json) {
+      writeJson(runtime.stdout, payload);
+    } else {
+      writeText(
+        runtime.stdout,
+        formatReviewRestored({
+          metadata,
+          sessionFilePath,
+          changedFiles: payload.changedFiles,
+          synced: false,
+          dryRun: true,
+          noSync: options.sync === false,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (shouldSync) {
+    const syncResult = await client.createRevision({
+      sessionId: metadata.reviewSessionId,
+      summary: "Restore local session",
+      files: current,
+    });
+    revision = syncResult.revision;
+    nextMetadata = {
+      ...metadata,
+      trackedFiles: toTrackedFiles(current, apiFilesFromRevision(syncResult.revision)),
+      lastSyncedAt: nowIso(),
+      lastKnownRevision: syncResult.revision.revisionNumber,
+    };
+  }
+
+  await saveSessionMetadata(sessionFilePath, nextMetadata);
+  const changedFilePaths = changedLocalFiles.map((file) => file.path);
+  if (options.json) {
+    writeJson(runtime.stdout, {
+      ok: true,
+      sessionFilePath,
+      session: publicSessionJson(nextMetadata),
+      synced: shouldSync,
+      changedFiles: changedFilePaths,
+      ...(revision ? { revision } : {}),
+    });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatReviewRestored({
+        metadata: nextMetadata,
+        sessionFilePath,
+        changedFiles: changedFilePaths,
+        synced: shouldSync,
+        noSync: options.sync === false,
+        revision,
+      }),
+    );
   }
 }
 
@@ -1051,6 +1202,123 @@ export async function rebaseCommand(
     });
   } else {
     writeText(runtime.stdout, formatDraftRebased({ draftReview: result.draftReview }));
+  }
+}
+
+export async function shareCommand(
+  runtime: CommandRuntime,
+  options: GlobalOptions & {
+    session?: string;
+    list?: boolean;
+    anyone?: boolean;
+    user?: string;
+    revokeLink?: string;
+    removeAccess?: string;
+  },
+) {
+  const loaded = options.session ? null : await loadSession(runtime, options);
+  const sessionId = options.session ?? loaded?.metadata.reviewSessionId;
+  if (!sessionId) {
+    throw new CliError("A session id is required.", ExitCode.Usage);
+  }
+
+  const actions = [
+    Boolean(options.list),
+    Boolean(options.anyone),
+    Boolean(options.user),
+    Boolean(options.revokeLink),
+    Boolean(options.removeAccess),
+  ].filter(Boolean).length;
+  if (actions > 1) {
+    throw new CliError(
+      "Use only one share action: --list, --anyone, --user, --revoke-link, or --remove-access.",
+      ExitCode.Usage,
+    );
+  }
+
+  const client = await makeClient(runtime, {
+    ...options,
+    baseUrl: loaded?.metadata.baseUrl ?? options.baseUrl,
+  });
+
+  if (options.anyone) {
+    const result = await client.shareDraftReview({ sessionId, audience: "anyone" });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, ...result });
+    } else {
+      writeText(
+        runtime.stdout,
+        formatDraftReviewShared({
+          sessionId,
+          shareLink: result.shareLink,
+          accessGrant: result.accessGrant,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (options.user) {
+    const recipient = options.user.trim();
+    if (!recipient) {
+      throw new CliError("--user requires a recipient.", ExitCode.Usage);
+    }
+    const result = await client.shareDraftReview({ sessionId, audience: "user", recipient });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, ...result });
+    } else {
+      writeText(
+        runtime.stdout,
+        formatDraftReviewShared({
+          sessionId,
+          shareLink: result.shareLink,
+          accessGrant: result.accessGrant,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (options.revokeLink) {
+    const shareLinkId = options.revokeLink.trim();
+    if (!shareLinkId) {
+      throw new CliError("--revoke-link requires a share link id.", ExitCode.Usage);
+    }
+    const result = await client.revokeDraftReviewShare({ sessionId, shareLinkId });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, shareLinkId, ...result });
+    } else {
+      writeText(runtime.stdout, `Revoked share link ${shareLinkId}.`);
+    }
+    return;
+  }
+
+  if (options.removeAccess) {
+    const accessGrantId = options.removeAccess.trim();
+    if (!accessGrantId) {
+      throw new CliError("--remove-access requires an access grant id.", ExitCode.Usage);
+    }
+    const result = await client.removeDraftReviewAccess({ sessionId, accessGrantId });
+    if (options.json) {
+      writeJson(runtime.stdout, { sessionId, accessGrantId, ...result });
+    } else {
+      writeText(runtime.stdout, `Removed access grant ${accessGrantId}.`);
+    }
+    return;
+  }
+
+  const result = await client.listDraftReviewShares(sessionId);
+  if (options.json) {
+    writeJson(runtime.stdout, { sessionId, ...result });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatDraftReviewShares({
+        sessionId,
+        shareLinks: result.shareLinks,
+        accessGrants: result.accessGrants,
+      }),
+    );
   }
 }
 

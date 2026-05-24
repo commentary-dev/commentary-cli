@@ -1,7 +1,9 @@
 import type {
+  DraftReviewAccessGrant,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
   DraftReviewRevision,
+  DraftReviewShareLink,
   DraftReviewSession,
   DraftThread,
   JsonObject,
@@ -38,6 +40,39 @@ export function formatReviewCreated(input: {
   ].join("\n");
 }
 
+export function formatReviewRestored(input: {
+  metadata: SessionMetadata;
+  sessionFilePath: string;
+  changedFiles: string[];
+  synced: boolean;
+  dryRun?: boolean | undefined;
+  noSync?: boolean | undefined;
+  revision?: DraftReviewRevision | undefined;
+}) {
+  const status = input.dryRun
+    ? input.noSync
+      ? "Would restore local session metadata without syncing"
+      : input.changedFiles.length > 0
+        ? "Would restore local session metadata and sync changes"
+        : "Would restore local session metadata; no sync needed"
+    : "Restored Commentary review";
+  const lines = [
+    status,
+    "",
+    `Session: ${input.metadata.reviewSessionId}`,
+    `Files: ${input.metadata.trackedFiles.length}`,
+    `Changed files: ${input.changedFiles.length ? input.changedFiles.join(", ") : "none"}`,
+    input.revision ? `Revision: ${input.revision.revisionNumber}` : null,
+    input.noSync && input.changedFiles.length > 0 ? "Sync: skipped by --no-sync" : null,
+    `URL: ${input.metadata.reviewUrl}`,
+    "",
+    input.dryRun
+      ? `Would save local session metadata to ${input.sessionFilePath}`
+      : `Saved local session metadata to ${input.sessionFilePath}`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
 export function formatGitBase(gitBase: DraftReviewGitBaseMetadata | null | undefined) {
   if (!gitBase) {
     return "none";
@@ -60,6 +95,75 @@ export function formatDraftRebased(input: { draftReview: DraftReviewSession }) {
     `URL: ${input.draftReview.reviewUrl}`,
     `Git base: ${formatGitBase(input.draftReview.gitBase)}`,
   ].join("\n");
+}
+
+function shareLinkUrl(link: DraftReviewShareLink) {
+  return link.url ?? link.shareUrl ?? null;
+}
+
+function accessGrantRecipient(grant: DraftReviewAccessGrant) {
+  return grant.recipient ?? grant.email ?? grant.userId ?? "unknown";
+}
+
+export function formatDraftReviewShares(input: {
+  sessionId: string;
+  shareLinks?: DraftReviewShareLink[] | undefined;
+  accessGrants?: DraftReviewAccessGrant[] | undefined;
+}) {
+  const shareLinks = input.shareLinks ?? [];
+  const accessGrants = input.accessGrants ?? [];
+  const lines = [`Draft review shares`, "", `Session: ${input.sessionId}`];
+
+  lines.push("", "Share links:");
+  if (shareLinks.length === 0) {
+    lines.push("none");
+  } else {
+    for (const link of shareLinks) {
+      lines.push(
+        [link.id, link.audience ?? "anyone", shareLinkUrl(link) ?? ""].filter(Boolean).join("\t"),
+      );
+    }
+  }
+
+  lines.push("", "User access:");
+  if (accessGrants.length === 0) {
+    lines.push("none");
+  } else {
+    for (const grant of accessGrants) {
+      lines.push([grant.id, accessGrantRecipient(grant)].join("\t"));
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function formatDraftReviewShared(input: {
+  sessionId: string;
+  shareLink?: DraftReviewShareLink | undefined;
+  accessGrant?: DraftReviewAccessGrant | undefined;
+}) {
+  if (input.shareLink) {
+    const url = shareLinkUrl(input.shareLink);
+    return [
+      "Shared Commentary review",
+      "",
+      `Session: ${input.sessionId}`,
+      `Share link: ${input.shareLink.id}`,
+      url ? `URL: ${url}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (input.accessGrant) {
+    return [
+      "Shared Commentary review",
+      "",
+      `Session: ${input.sessionId}`,
+      `Access grant: ${input.accessGrant.id}`,
+      `Recipient: ${accessGrantRecipient(input.accessGrant)}`,
+    ].join("\n");
+  }
+  return [`Shared Commentary review`, "", `Session: ${input.sessionId}`].join("\n");
 }
 
 export function formatRevision(input: {
