@@ -143,6 +143,7 @@ Reply and resolve:
 ```bash
 commentary reply <thread-id> "Updated this in revision 3." --alias "Docs agent"
 commentary resolve <thread-id> --message "Addressed in revision 3." --alias "Docs agent"
+commentary resolve --thread -thread_123 --message "Addressed."
 ```
 
 Share a review:
@@ -184,7 +185,9 @@ commentary comments
 commentary next-comment
 commentary wait-comment
 commentary reply <thread-id> <message>
+commentary reply --thread <thread-id> <message>
 commentary resolve <thread-id>
+commentary resolve --thread <thread-id>
 commentary share
 commentary pull
 commentary open
@@ -357,6 +360,8 @@ Commentary-rendered Markdown heading anchors normalize heading text to lowercase
 ## Agent Alias
 
 Use `--alias <name>` on `reply` or `resolve --message` to attribute agent-authored replies. For automation, set `COMMENTARY_AGENT_ALIAS`; an explicit `--alias` flag takes precedence.
+
+Use `--thread <id>` with `reply` or `resolve` when a thread id starts with a dash and could be confused for an option.
 
 `commentary reply` reopens a resolved thread when the reply API response still reports the thread as resolved. This keeps a thread active after a new follow-up response.
 

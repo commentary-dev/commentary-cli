@@ -1447,6 +1447,118 @@ describe("CLI commands", () => {
     }
   });
 
+  it("accepts dash-leading thread ids for reply and resolve", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const resolvePositionalId = "-PAeryRBpzwlICGZa3vkDevGFJn1p3u1";
+    const resolveFlagId = "-k0_JuhBt2k6Em0zSpQLsRMmo5OApKVM";
+    const replyPositionalId = "-s4ZSiV5JJfYTylI5qQ5OnsIWQn-EdJ2";
+    const replyFlagId = "-threadFlag";
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      const threadId = [resolvePositionalId, resolveFlagId, replyPositionalId, replyFlagId].find(
+        (id) => requestUrl.includes(`/comments/${encodeURIComponent(id)}/`),
+      );
+      if (!threadId) {
+        throw new Error(`Unexpected request ${requestUrl}`);
+      }
+
+      if (requestUrl.endsWith(`/comments/${encodeURIComponent(threadId)}/replies`)) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          bodyMarkdown: expect.any(String),
+        });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: threadId,
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+
+      if (requestUrl.endsWith(`/comments/${encodeURIComponent(threadId)}/status`)) {
+        expect(JSON.parse(String(init?.body))).toEqual({ status: "resolved" });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: threadId,
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "resolved",
+            comments: [],
+          },
+        });
+      }
+
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    for (const argv of [
+      ["resolve", resolvePositionalId, "--message", "Fixed positional.", "--token", "token"],
+      ["resolve", "--thread", resolveFlagId, "--message", "Fixed flag.", "--token", "token"],
+      ["reply", replyPositionalId, "Reply positional.", "--token", "token"],
+      ["reply", "--thread", replyFlagId, "Reply flag.", "--token", "token"],
+    ]) {
+      output = "";
+      errors = "";
+      const code = await runCli(argv, {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+      expect(code).toBe(0);
+      expect(errors).toBe("");
+    }
+
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+  });
+
+  it("rejects ambiguous thread id argument forms before calling the API", async () => {
+    const fetchImpl = vi.fn();
+    const cases = [
+      ["resolve", "--message", "Fixed.", "--token", "token"],
+      ["resolve", "thread_1", "--thread", "-thread_2", "--token", "token"],
+      ["reply", "--thread", "-thread_1", "thread_2", "Fixed.", "--token", "token"],
+      ["reply", "-thread_1", "Fixed.", "extra", "--token", "token"],
+    ];
+
+    for (const argv of cases) {
+      output = "";
+      errors = "";
+      const code = await runCli(argv, {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+      expect(code).toBe(2);
+      expect(errors).not.toBe("");
+    }
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("reopens resolved threads after replying", async () => {
     await mkdir(path.join(dir, ".commentary"), { recursive: true });
     await writeFile(

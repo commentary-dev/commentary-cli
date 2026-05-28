@@ -73,6 +73,70 @@ function helpText(details: string, examples: string[]) {
   ].join("\n");
 }
 
+function resolveThreadIdArgument(
+  positionalThreadId: string | undefined,
+  options: { thread?: string | undefined },
+) {
+  const optionThreadId = options.thread;
+  if (positionalThreadId && optionThreadId) {
+    throw new CliError(
+      "Pass the thread id either as <thread-id> or --thread, not both.",
+      ExitCode.Usage,
+    );
+  }
+  const threadId = optionThreadId ?? positionalThreadId;
+  if (!threadId) {
+    throw new CliError("A thread id is required.", ExitCode.Usage);
+  }
+  if (!optionThreadId && threadId.startsWith("--")) {
+    throw new CliError(
+      'Thread ids beginning with "--" must be passed with --thread <id>.',
+      ExitCode.Usage,
+    );
+  }
+  return threadId;
+}
+
+function resolveReplyArguments(args: string[], options: { thread?: string | undefined }) {
+  if (options.thread) {
+    const message = args[0];
+    if (message === undefined) {
+      throw new CliError("A reply message is required.", ExitCode.Usage);
+    }
+    if (args.length > 1) {
+      throw new CliError(
+        "Pass the thread id either as <thread-id> or --thread, not both.",
+        ExitCode.Usage,
+      );
+    }
+    return {
+      threadId: resolveThreadIdArgument(undefined, options),
+      message,
+    };
+  }
+
+  if (args.length === 0) {
+    throw new CliError("A thread id is required.", ExitCode.Usage);
+  }
+  if (args.length === 1) {
+    throw new CliError("A reply message is required.", ExitCode.Usage);
+  }
+  if (args.length > 2) {
+    throw new CliError("Too many arguments for reply.", ExitCode.Usage);
+  }
+
+  const threadId = args[0];
+  const message = args[1];
+  if (threadId === undefined || message === undefined) {
+    throw new CliError("A reply message is required.", ExitCode.Usage);
+  }
+
+  return {
+    threadId: resolveThreadIdArgument(threadId, options),
+    message,
+  };
+}
+
 function addGitBaseOptions(command: Command) {
   return command
     .option("--git-base <mode>", "Use a GitHub base. Supported value: auto.")
@@ -490,9 +554,11 @@ export function buildProgram(runtime: CommandRuntime) {
 
   program
     .command("reply")
+    .usage("[options] <thread-id> <message>")
     .description("Reply to a comment thread.")
-    .argument("<thread-id>")
-    .argument("<message>")
+    .argument("[args...]")
+    .allowUnknownOption()
+    .option("--thread <id>", "Thread id. Use this when the id starts with a dash.")
     .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
     .option(
       "--alias <name>",
@@ -504,19 +570,24 @@ export function buildProgram(runtime: CommandRuntime) {
         "Adds a reply to the thread id printed by comments, next-comment, or wait-comment. Replies reopen resolved threads.",
         [
           'commentary reply thread_123 "Updated this in revision 3."',
+          'commentary reply --thread -thread_123 "Fixed."',
           'commentary reply thread_123 "Fixed." --alias "Docs agent"',
           'COMMENTARY_AGENT_ALIAS="Docs agent" commentary reply thread_123 "Fixed." --json',
         ],
       ),
     )
-    .action(async function (this: Command, threadId: string, message: string) {
+    .action(async function (this: Command, args: string[]) {
+      const { threadId, message } = resolveReplyArguments(args, this.opts());
       await replyCommand(runtime, threadId, message, { ...globalOptions(this), ...this.opts() });
     });
 
   program
     .command("resolve")
+    .usage("[options] <thread-id>")
     .description("Resolve a comment thread.")
-    .argument("<thread-id>")
+    .argument("[thread-id]")
+    .allowUnknownOption()
+    .option("--thread <id>", "Thread id. Use this when the id starts with a dash.")
     .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
     .option("--message <message>", "Add a closing reply before resolving the thread.")
     .option(
@@ -529,12 +600,14 @@ export function buildProgram(runtime: CommandRuntime) {
         "Marks a thread resolved. Use --message when the final response should be visible in the thread.",
         [
           "commentary resolve thread_123",
+          'commentary resolve --thread -thread_123 --message "Fixed."',
           'commentary resolve thread_123 --message "Addressed in revision 3."',
           'commentary resolve thread_123 --message "Fixed." --alias "Docs agent" --json',
         ],
       ),
     )
     .action(async function (this: Command, threadId: string) {
+      threadId = resolveThreadIdArgument(threadId, this.opts());
       await resolveCommand(runtime, threadId, { ...globalOptions(this), ...this.opts() });
     });
 
