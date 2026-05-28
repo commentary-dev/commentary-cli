@@ -12,7 +12,14 @@ import {
   REQUIRED_SCOPES,
   SESSION_FILE,
 } from "./constants.js";
-import { normalizeBaseUrl, removeStoredToken, resolveToken, setStoredToken } from "./config.js";
+import {
+  getStoredToken,
+  normalizeBaseUrl,
+  removeStoredToken,
+  setStoredToken,
+  shouldRefreshStoredToken,
+  type StoredToken,
+} from "./config.js";
 import { normalizeReviewPath } from "./content.js";
 import { CliError, ExitCode } from "./errors.js";
 import { collectFiles, readTrackedFiles, toTrackedFiles } from "./files.js";
@@ -82,8 +89,56 @@ function nowIso() {
 
 async function makeClient(runtime: CommandRuntime, options: GlobalOptions) {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
-  const token = await resolveToken({ baseUrl, token: options.token });
-  return new CommentaryApiClient({ baseUrl, token, fetchImpl: runtime.fetchImpl });
+  const explicitToken = options.token?.trim() || process.env.COMMENTARY_TOKEN?.trim();
+  if (explicitToken) {
+    return new CommentaryApiClient({ baseUrl, token: explicitToken, fetchImpl: runtime.fetchImpl });
+  }
+
+  const stored = await getStoredToken(baseUrl);
+  if (!stored) {
+    return new CommentaryApiClient({ baseUrl, token: null, fetchImpl: runtime.fetchImpl });
+  }
+
+  const refreshStored = () => refreshStoredLogin(runtime, baseUrl);
+  const token = shouldRefreshStoredToken(stored) ? await refreshStored() : stored.accessToken;
+  return new CommentaryApiClient({
+    baseUrl,
+    token,
+    fetchImpl: runtime.fetchImpl,
+    onAuthRefresh: refreshStored,
+  });
+}
+
+function isInvalidRefreshError(error: unknown) {
+  return (
+    error instanceof CliError &&
+    error.exitCode === ExitCode.Auth &&
+    (error.message === "invalid_grant" || /refresh token/i.test(error.message))
+  );
+}
+
+async function refreshStoredLogin(runtime: CommandRuntime, baseUrl: string) {
+  const stored = await getStoredToken(baseUrl);
+  if (!stored?.refreshToken) {
+    return null;
+  }
+  try {
+    const client = new CommentaryApiClient({ baseUrl, fetchImpl: runtime.fetchImpl });
+    const token = await client.refreshAccessToken({ refreshToken: stored.refreshToken });
+    const refreshed: StoredToken = {
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token,
+      expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
+    };
+    await setStoredToken(baseUrl, refreshed);
+    return refreshed.accessToken;
+  } catch (error) {
+    if (isInvalidRefreshError(error)) {
+      await removeStoredToken(baseUrl);
+      throw new CliError("Stored Commentary login expired. Run commentary login.", ExitCode.Auth);
+    }
+    throw error;
+  }
 }
 
 function apiFilesFromRevision(revision: DraftReviewRevision | null) {

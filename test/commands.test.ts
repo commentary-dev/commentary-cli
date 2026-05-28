@@ -1592,4 +1592,184 @@ describe("CLI commands", () => {
     expect(output).toContain("Resolved comments: 1");
     expect(output).toContain("Git base: commentary-dev/commentary-docs sha abc123 path spec.md");
   });
+
+  it("refreshes expired stored login tokens before running a command", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "refresh-token",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/.well-known/oauth-authorization-server")) {
+          return jsonResponse({
+            issuer: "https://commentary.test",
+            token_endpoint: "https://commentary.test/oauth/token",
+            device_authorization_endpoint: "https://commentary.test/oauth/device/code",
+          });
+        }
+        if (requestUrl.endsWith("/oauth/token")) {
+          expect(JSON.parse(String(init?.body))).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "refresh-token",
+          });
+          return jsonResponse({
+            access_token: "fresh-access",
+            refresh_token: "fresh-refresh",
+            token_type: "Bearer",
+            expires_in: 3600,
+          });
+        }
+        if (requestUrl.endsWith("/api/v1/draft-reviews")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe(
+            "Bearer fresh-access",
+          );
+          return jsonResponse({ ok: true, draftReviews: [] });
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(["whoami", "--base-url", "https://commentary.test"], {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+
+      expect(code).toBe(0);
+      const config = JSON.parse(await readFile(path.join(configDir, "config.json"), "utf8"));
+      expect(config.tokens["https://commentary.test"].accessToken).toBe("fresh-access");
+      expect(config.tokens["https://commentary.test"].refreshToken).toBe("fresh-refresh");
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it("does not refresh when an explicit token is provided", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "refresh-token",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/api/v1/draft-reviews")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe(
+            "Bearer explicit-token",
+          );
+          return jsonResponse({ ok: true, draftReviews: [] });
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(
+        ["whoami", "--base-url", "https://commentary.test", "--token", "explicit-token"],
+        {
+          cwd: dir,
+          stdout,
+          stderr,
+          fetchImpl: fetchImpl as typeof fetch,
+          isTty: false,
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it("clears stored login state when refresh is rejected", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "bad-refresh",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/.well-known/oauth-authorization-server")) {
+          return jsonResponse({
+            issuer: "https://commentary.test",
+            token_endpoint: "https://commentary.test/oauth/token",
+            device_authorization_endpoint: "https://commentary.test/oauth/device/code",
+          });
+        }
+        if (requestUrl.endsWith("/oauth/token")) {
+          return jsonResponse({ error: "invalid_grant" }, 401);
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(["whoami", "--base-url", "https://commentary.test"], {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+
+      expect(code).toBe(3);
+      expect(errors).toContain("Stored Commentary login expired. Run commentary login.");
+      const config = JSON.parse(await readFile(path.join(configDir, "config.json"), "utf8"));
+      expect(config.tokens["https://commentary.test"]).toBeUndefined();
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
 });

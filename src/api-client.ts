@@ -18,6 +18,7 @@ type ApiClientOptions = {
   baseUrl: string;
   token?: string | null | undefined;
   fetchImpl?: FetchLike | undefined;
+  onAuthRefresh?: (() => Promise<string | null>) | undefined;
 };
 
 type OAuthMetadata = {
@@ -30,13 +31,15 @@ type OAuthMetadata = {
 
 export class CommentaryApiClient {
   readonly baseUrl: string;
-  private readonly token: string | null;
+  private token: string | null;
   private readonly fetchImpl: FetchLike;
+  private readonly onAuthRefresh: (() => Promise<string | null>) | undefined;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token ?? null;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.onAuthRefresh = options.onAuthRefresh;
   }
 
   async getOAuthMetadata() {
@@ -83,6 +86,23 @@ export class CommentaryApiClient {
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: input.deviceCode,
         resource: input.resource,
+      },
+    });
+  }
+
+  async refreshAccessToken(input: { refreshToken: string }) {
+    const metadata = await this.getOAuthMetadata();
+    return this.rawJson<{
+      access_token: string;
+      refresh_token: string;
+      token_type: "Bearer";
+      expires_in: number;
+    }>(metadata.token_endpoint, {
+      auth: false,
+      method: "POST",
+      body: {
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
       },
     });
   }
@@ -401,18 +421,34 @@ export class CommentaryApiClient {
       headers.authorization = `Bearer ${this.token}`;
     }
     try {
-      const requestInit: RequestInit = {
-        method: init.method ?? "GET",
-        headers,
+      const buildRequestInit = (): RequestInit => {
+        const requestInit: RequestInit = {
+          method: init.method ?? "GET",
+          headers: { ...headers },
+        };
+        if (init.signal) {
+          requestInit.signal = init.signal;
+        }
+        if (body !== undefined) {
+          requestInit.body = body;
+        }
+        return requestInit;
       };
-      if (init.signal) {
-        requestInit.signal = init.signal;
+      const response = await this.fetchImpl(url, buildRequestInit());
+      if (response.status !== 401 || !init.auth || !this.onAuthRefresh) {
+        return response;
       }
-      if (body !== undefined) {
-        requestInit.body = body;
+      const refreshedToken = await this.onAuthRefresh();
+      if (!refreshedToken) {
+        return response;
       }
-      return await this.fetchImpl(url, requestInit);
+      this.token = refreshedToken;
+      headers.authorization = `Bearer ${refreshedToken}`;
+      return await this.fetchImpl(url, buildRequestInit());
     } catch (error) {
+      if (error instanceof CliError) {
+        throw error;
+      }
       throw new CliError(
         error instanceof Error ? error.message : "Network request failed.",
         ExitCode.Network,

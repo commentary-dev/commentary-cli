@@ -219,6 +219,73 @@ describe("CommentaryApiClient", () => {
     await expect(client.listDraftReviews()).rejects.toThrow("Missing scope.");
   });
 
+  it("refreshes auth once after a 401 and retries the request", async () => {
+    const requests: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push((init?.headers as Record<string, string>).authorization ?? "");
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({ error: "invalid_token" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, draftReviews: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const client = new CommentaryApiClient({
+      baseUrl: "https://commentary.test",
+      token: "expired",
+      fetchImpl: fetchImpl as typeof fetch,
+      onAuthRefresh: async () => "fresh",
+    });
+
+    await expect(client.listDraftReviews()).resolves.toEqual({ ok: true, draftReviews: [] });
+    expect(requests).toEqual(["Bearer expired", "Bearer fresh"]);
+  });
+
+  it("exchanges refresh tokens with the OAuth token endpoint", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/.well-known/oauth-authorization-server")) {
+        return new Response(
+          JSON.stringify({
+            issuer: "https://commentary.test",
+            token_endpoint: "https://commentary.test/oauth/token",
+            device_authorization_endpoint: "https://commentary.test/oauth/device/code",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      expect(requestUrl).toBe("https://commentary.test/oauth/token");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-token",
+      });
+      return new Response(
+        JSON.stringify({
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = new CommentaryApiClient({
+      baseUrl: "https://commentary.test",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.refreshAccessToken({ refreshToken: "refresh-token" })).resolves.toEqual({
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      token_type: "Bearer",
+      expires_in: 3600,
+    });
+  });
+
   it("streams draft review live events with bearer auth", async () => {
     const encoder = new TextEncoder();
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

@@ -61,6 +61,7 @@ COMMENTARY_TOKEN=<token> commentary review ./docs/spec.md
 ```
 
 Tokens are stored outside the project config. Project metadata in `.commentary/session.json` never stores secrets.
+Device-login tokens refresh automatically until the stored refresh token expires or is revoked.
 
 ## Common Workflow
 
