@@ -155,6 +155,292 @@ describe("CLI commands", () => {
     expect(synced.lastKnownRevision).toBe(2);
   });
 
+  it("creates a Brainstorming Review with review mode", async () => {
+    await mkdir(path.join(dir, "docs"), { recursive: true });
+    await writeFile(path.join(dir, "docs/spec.md"), "# Spec\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/v1/draft-reviews") && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          title: "Spec",
+          mode: "brainstorming",
+          sourceType: "cli",
+        });
+        return jsonResponse(
+          {
+            ok: true,
+            sessionId: "draft_1",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            draftReview: {
+              id: "draft_1",
+              title: "Spec",
+              mode: "brainstorming",
+              reviewUrl: "https://commentary.test/review/draft/draft_1",
+              files: [{ id: "file_1", path: "docs/spec.md", contentType: "markdown" }],
+              latestRevision: {
+                id: "rev_1",
+                revisionNumber: 1,
+                files: [
+                  {
+                    fileId: "file_1",
+                    path: "docs/spec.md",
+                    contentType: "markdown",
+                    contentHash: "remote_hash",
+                    sizeBytes: 7,
+                  },
+                ],
+              },
+            },
+          },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(
+      [
+        "review",
+        "docs/spec.md",
+        "--title",
+        "Spec",
+        "--mode",
+        "brainstorming",
+        "--no-open",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(output).toContain("Mode: brainstorming");
+  });
+
+  it("runs Brainstorming Review commands against the v1 API", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    const content = "# Spec\n";
+    await writeFile(path.join(dir, "spec.md"), content, "utf8");
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [
+          {
+            path: "spec.md",
+            fileId: "file_1",
+            contentType: "markdown",
+            contentHash: contentHash(content),
+            sizeBytes: Buffer.byteLength(content),
+          },
+        ],
+        source: ["review", "spec.md"],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastSyncedAt: "2026-01-01T00:00:00.000Z",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push({
+        url: requestUrl,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (requestUrl.endsWith("/consensus-state")) {
+        return jsonResponse({
+          ok: true,
+          consensusRule: { enabled: true, mode: "owner_decides" },
+          counts: { acceptedForChange: 1, blocked: 0, pending: 0 },
+          filesWithActionableThreads: ["spec.md"],
+          filesWithBlockedThreads: [],
+          agentReady: true,
+        });
+      }
+      if (requestUrl.endsWith("/feedback")) {
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_1",
+            fileId: null,
+            filePath: "spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/consensus-decision")) {
+        return jsonResponse({
+          ok: true,
+          consensus: { state: "accepted_for_change" },
+          thread: {
+            id: "thread_1",
+            fileId: null,
+            filePath: "spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/consensus-rule")) {
+        return jsonResponse({
+          ok: true,
+          consensusRule: { enabled: true, mode: "no_open_blockers" },
+        });
+      }
+      if (requestUrl.endsWith("/comments?status=open&consensusState=accepted_for_change")) {
+        return jsonResponse({
+          ok: true,
+          threads: [
+            {
+              id: "thread_1",
+              fileId: null,
+              filePath: "spec.md",
+              status: "open",
+              consensus: { state: "accepted_for_change" },
+              comments: [{ bodyMarkdown: "Please update." }],
+            },
+          ],
+        });
+      }
+      if (requestUrl.endsWith("/revisions") && init?.method === "POST") {
+        return jsonResponse(
+          {
+            ok: true,
+            revision: {
+              id: "rev_2",
+              revisionNumber: 2,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "spec.md",
+                  contentType: "markdown",
+                  contentHash: contentHash(content),
+                  sizeBytes: Buffer.byteLength(content),
+                },
+              ],
+            },
+            addressedThreadIds: ["thread_1"],
+          },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+    const runtime = {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    };
+
+    expect(await runCli(["brainstorm", "status", "--token", "token", "--json"], runtime)).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["brainstorm", "signal", "thread_1", "agree", "--clear", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        [
+          "brainstorm",
+          "decide",
+          "thread_1",
+          "accepted_for_change",
+          "--reason",
+          "Ready",
+          "--token",
+          "token",
+          "--json",
+        ],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        [
+          "brainstorm",
+          "rule",
+          "--consensus-mode",
+          "no_open_blockers",
+          "--min-response-count",
+          "2",
+          "--token",
+          "token",
+          "--json",
+        ],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["comments", "--consensus-state", "accepted_for_change", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["sync", "--addressed-thread", "thread_1", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+
+    expect(requests.map((request) => [request.method, request.url, request.body])).toEqual([
+      ["GET", "https://commentary.test/api/v1/draft-reviews/draft_1/consensus-state", undefined],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments/thread_1/feedback",
+        { signal: "agree", active: false },
+      ],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments/thread_1/consensus-decision",
+        { decision: "accepted_for_change", reason: "Ready" },
+      ],
+      [
+        "PATCH",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/consensus-rule",
+        { mode: "no_open_blockers", minResponseCount: 2 },
+      ],
+      [
+        "GET",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments?status=open&consensusState=accepted_for_change",
+        undefined,
+      ],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/revisions",
+        {
+          summary: null,
+          addressedThreadIds: ["thread_1"],
+          files: [
+            {
+              fileId: "file_1",
+              path: "spec.md",
+              content,
+              contentType: "markdown",
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
   it("restores a review session and syncs changed local files", async () => {
     await mkdir(path.join(dir, "docs"), { recursive: true });
     await writeFile(path.join(dir, "docs/spec.md"), "# Local\n", "utf8");

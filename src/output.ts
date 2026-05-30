@@ -1,4 +1,5 @@
 import type {
+  BrainstormingConsensusStateResult,
   DraftReviewAccessGrant,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
@@ -22,6 +23,10 @@ export function writeText(stdout: Writer, value: string) {
   stdout.write(`${value.trimEnd()}\n`);
 }
 
+function formatMode(mode: string | null | undefined) {
+  return mode ?? "draft";
+}
+
 export function formatReviewCreated(input: {
   draftReview: DraftReviewSession;
   sessionFilePath: string;
@@ -31,6 +36,7 @@ export function formatReviewCreated(input: {
     "Created Commentary review",
     "",
     `Title: ${input.draftReview.title}`,
+    `Mode: ${formatMode(input.draftReview.mode)}`,
     `Files: ${input.fileCount}`,
     `Session: ${input.draftReview.id}`,
     `URL: ${input.draftReview.reviewUrl}`,
@@ -182,6 +188,53 @@ export function formatRevision(input: {
   ].join("\n");
 }
 
+function formatConsensus(thread: DraftThread) {
+  if (!thread.consensus?.state) {
+    return null;
+  }
+  const reason = thread.consensus.reason ? ` - ${thread.consensus.reason}` : "";
+  return `Consensus: ${thread.consensus.state}${reason}`;
+}
+
+function formatFeedbackSummary(thread: DraftThread) {
+  if (!thread.feedbackSummary) {
+    return null;
+  }
+  const parts = Object.entries(thread.feedbackSummary)
+    .filter(([, value]) => typeof value === "number" && value > 0)
+    .map(([key, value]) => `${key}: ${value}`);
+  return parts.length ? `Feedback: ${parts.join(", ")}` : null;
+}
+
+export function formatBrainstormingConsensusState(input: {
+  sessionId: string;
+  state: BrainstormingConsensusStateResult;
+}) {
+  const counts = input.state.counts;
+  return [
+    "Brainstorming review status",
+    "",
+    `Session: ${input.sessionId}`,
+    `Agent ready: ${input.state.agentReady ? "yes" : "no"}`,
+    `Accepted for change: ${counts.acceptedForChange ?? 0}`,
+    `Blocked: ${counts.blocked ?? 0}`,
+    `Needs owner decision: ${counts.needsOwnerDecision ?? 0}`,
+    `Pending: ${counts.pending ?? 0}`,
+    `Applied: ${counts.applied ?? 0}`,
+    `Resolved: ${counts.resolved ?? 0}`,
+    `Actionable files: ${
+      input.state.filesWithActionableThreads.length
+        ? input.state.filesWithActionableThreads.join(", ")
+        : "none"
+    }`,
+    `Blocked files: ${
+      input.state.filesWithBlockedThreads.length
+        ? input.state.filesWithBlockedThreads.join(", ")
+        : "none"
+    }`,
+  ].join("\n");
+}
+
 function commentBody(thread: DraftThread) {
   const first = thread.comments[0];
   return first?.bodyMarkdown ?? first?.body ?? "";
@@ -201,6 +254,8 @@ export function formatCommentsText(threads: DraftThread[]) {
       [
         `[${thread.id}] ${thread.filePath}`,
         `Status: ${thread.status}`,
+        formatConsensus(thread),
+        formatFeedbackSummary(thread),
         thread.selectedText ? `Anchor: "${thread.selectedText}"` : null,
         `${commentAuthor(thread)}: ${commentBody(thread)}`,
       ]
@@ -229,6 +284,14 @@ export function formatCommentsMarkdown(input: {
     lines.push(`## Comment ${thread.id}`, "");
     lines.push(`File: ${thread.filePath}`);
     lines.push(`Status: ${thread.status}`);
+    const consensus = formatConsensus(thread);
+    if (consensus) {
+      lines.push(consensus);
+    }
+    const feedback = formatFeedbackSummary(thread);
+    if (feedback) {
+      lines.push(feedback);
+    }
     if (thread.selectedText) {
       lines.push(`Anchor: "${thread.selectedText}"`);
     }

@@ -1,5 +1,11 @@
 import { Command, Option } from "commander";
 import {
+  brainstormDecideCommand,
+  brainstormEnableCommand,
+  brainstormNextCommand,
+  brainstormRuleCommand,
+  brainstormSignalCommand,
+  brainstormStatusCommand,
   commentsCommand,
   loginCommand,
   nextCommentCommand,
@@ -258,6 +264,11 @@ export function buildProgram(runtime: CommandRuntime) {
     .option("--title <title>", "Review title shown in Commentary.")
     .option("--description <description>", "Optional review description shown in Commentary.")
     .addOption(
+      new Option("--mode <mode>", "Review mode")
+        .choices(["draft", "brainstorming"])
+        .default("draft"),
+    )
+    .addOption(
       new Option("--content-type <type>", "Content type")
         .choices(["auto", "markdown", "html", "plain_text"])
         .default("auto"),
@@ -308,6 +319,11 @@ export function buildProgram(runtime: CommandRuntime) {
     .description("Upload current tracked files as a new revision.")
     .option("--message <summary>", "Revision summary shown in Commentary.")
     .option("--all", "Upload even when tracked file hashes have not changed.")
+    .option(
+      "--addressed-thread <id>",
+      "Brainstorming thread id addressed by this revision. May be repeated.",
+      collectOption,
+    )
     .option("--dry-run", "Print pending changed paths without uploading a revision.")
     .addHelpText(
       "after",
@@ -325,6 +341,11 @@ export function buildProgram(runtime: CommandRuntime) {
     .description("Alias for sync.")
     .option("--message <summary>", "Revision summary shown in Commentary.")
     .option("--all", "Upload even when tracked file hashes have not changed.")
+    .option(
+      "--addressed-thread <id>",
+      "Brainstorming thread id addressed by this revision. May be repeated.",
+      collectOption,
+    )
     .option("--dry-run", "Print pending changed paths without uploading a revision.")
     .addHelpText(
       "after",
@@ -421,6 +442,21 @@ export function buildProgram(runtime: CommandRuntime) {
     .option("--resolved", "Show resolved threads.")
     .option("--all", "Show open and resolved threads.")
     .option("--file <path>", "Filter by review file path, e.g. docs/spec.md.")
+    .addOption(
+      new Option(
+        "--consensus-state <state>",
+        "Filter Brainstorming Review threads by consensus state",
+      ).choices([
+        "pending",
+        "accepted_for_change",
+        "blocked",
+        "needs_owner_decision",
+        "rejected",
+        "out_of_scope",
+        "applied",
+        "resolved",
+      ]),
+    )
     .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
     .option("--watch", "Stream open and future comment events as JSON lines until stopped.")
     .option("--jsonl", "Use newline-delimited JSON output for watch mode.")
@@ -524,6 +560,232 @@ export function buildProgram(runtime: CommandRuntime) {
     )
     .action(async function (this: Command) {
       await nextCommentCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  const consensusStateChoices = [
+    "pending",
+    "accepted_for_change",
+    "blocked",
+    "needs_owner_decision",
+    "rejected",
+    "out_of_scope",
+    "applied",
+    "resolved",
+  ];
+
+  const brainstorm = program
+    .command("brainstorm")
+    .description("Manage Brainstorming Review feedback and consensus.");
+
+  brainstorm
+    .command("enable")
+    .description("Convert the linked draft review to a Brainstorming Review.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .addHelpText(
+      "after",
+      helpText("Updates only hosted review metadata; local session metadata is unchanged.", [
+        "commentary brainstorm enable",
+        "commentary brainstorm enable --session draft_123 --json",
+      ]),
+    )
+    .action(async function (this: Command) {
+      await brainstormEnableCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  brainstorm
+    .command("status")
+    .description("Show Brainstorming Review consensus status.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Summarizes consensus counts, actionable files, blocked files, and agent readiness.",
+        ["commentary brainstorm status", "commentary brainstorm status --json"],
+      ),
+    )
+    .action(async function (this: Command) {
+      await brainstormStatusCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  brainstorm
+    .command("next")
+    .description("Return matching Brainstorming threads, or wait for a matching live event.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--file <path>", "Filter by review file path, e.g. docs/spec.md.")
+    .addOption(
+      new Option("--consensus-state <state>", "Consensus state to return")
+        .choices(consensusStateChoices)
+        .default("accepted_for_change"),
+    )
+    .option("--timeout <duration>", "Maximum wait time, e.g. 30m, 10s, or 0 for no timeout.", "30m")
+    .addOption(
+      new Option("--format <format>", "Output format")
+        .choices(["text", "markdown", "json"])
+        .default("markdown"),
+    )
+    .addHelpText(
+      "after",
+      helpText(
+        "Agent-safe Brainstorming loop primitive for accepted or blocked consensus states.",
+        [
+          "commentary brainstorm next --json",
+          "commentary brainstorm next --consensus-state blocked --timeout 60s",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await brainstormNextCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
+
+  brainstorm
+    .command("signal")
+    .usage("[options] <thread-id> <signal>")
+    .description("Set or clear a Brainstorming feedback signal.")
+    .argument("<thread-id>")
+    .argument("<signal>")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--clear", "Clear this signal instead of setting it.")
+    .option(
+      "--alias <name>",
+      "Agent alias for signal attribution. Overrides COMMENTARY_AGENT_ALIAS.",
+    )
+    .option("--client-name <name>", "Client name for signal attribution.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Signals are agree, object, blocker, needs_clarification, or addressed. addressed is owner-only.",
+        [
+          "commentary brainstorm signal thread_123 agree --alias docs-agent",
+          "commentary brainstorm signal thread_123 blocker --clear",
+        ],
+      ),
+    )
+    .action(async function (this: Command, threadId: string, signal: string) {
+      const choices = ["agree", "object", "blocker", "needs_clarification", "addressed"] as const;
+      if (!(choices as readonly string[]).includes(signal)) {
+        throw new CliError(
+          "Signal must be agree, object, blocker, needs_clarification, or addressed.",
+          ExitCode.Usage,
+        );
+      }
+      await brainstormSignalCommand(runtime, threadId, signal as (typeof choices)[number], {
+        ...globalOptions(this),
+        ...this.opts(),
+      });
+    });
+
+  brainstorm
+    .command("decide")
+    .usage("[options] <thread-id> <decision>")
+    .description("Set or clear an owner consensus decision for a Brainstorming thread.")
+    .argument("<thread-id>")
+    .argument("<decision>")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--reason <text>", "Optional owner decision reason.")
+    .addHelpText(
+      "after",
+      helpText("Decisions are accepted_for_change, rejected, out_of_scope, or clear.", [
+        "commentary brainstorm decide thread_123 accepted_for_change",
+        'commentary brainstorm decide thread_123 rejected --reason "Not in scope"',
+      ]),
+    )
+    .action(async function (this: Command, threadId: string, decision: string) {
+      const choices = ["accepted_for_change", "rejected", "out_of_scope", "clear"] as const;
+      if (!(choices as readonly string[]).includes(decision)) {
+        throw new CliError(
+          "Decision must be accepted_for_change, rejected, out_of_scope, or clear.",
+          ExitCode.Usage,
+        );
+      }
+      await brainstormDecideCommand(runtime, threadId, decision as (typeof choices)[number], {
+        ...globalOptions(this),
+        ...this.opts(),
+      });
+    });
+
+  brainstorm
+    .command("rule")
+    .description("Get or update the Brainstorming consensus rule.")
+    .option("--session <id>", "Use an explicit draft review session id instead of local metadata.")
+    .option("--enabled", "Enable consensus rules.")
+    .option("--disabled", "Disable consensus rules.")
+    .addOption(
+      new Option("--consensus-mode <mode>", "Consensus mode").choices([
+        "owner_decides",
+        "no_open_blockers",
+        "n_of_m",
+        "required_reviewers",
+      ]),
+    )
+    .option("--agreement-threshold <count>", "Agreement count required for n_of_m mode.")
+    .option("--min-response-count <count>", "Minimum reviewer responses before acceptance.")
+    .option("--required-reviewer <id>", "Required reviewer id. May be repeated.", collectOption)
+    .addOption(
+      new Option(
+        "--required-reviewer-condition <condition>",
+        "Required reviewer condition",
+      ).choices([
+        "all_required_agree",
+        "no_required_objects",
+        "owner_plus_one_required_agrees",
+        "threshold_no_blockers",
+      ]),
+    )
+    .addOption(
+      new Option("--objection-policy <policy>", "How objections affect consensus").choices([
+        "block",
+        "owner_decision",
+        "ignore",
+      ]),
+    )
+    .option("--blockers-block", "Block consensus when blockers are present.")
+    .option("--blockers-do-not-block", "Do not block consensus when blockers are present.")
+    .option("--count-agent-signals", "Count agent signals in consensus.")
+    .option("--ignore-agent-signals", "Ignore agent signals in consensus.")
+    .addOption(
+      new Option("--decision-poll-completion <policy>", "Decision poll completion policy").choices([
+        "closed",
+        "threshold",
+      ]),
+    )
+    .addHelpText(
+      "after",
+      helpText(
+        "With no rule flags, prints the current rule. With flags, patches only supplied fields.",
+        [
+          "commentary brainstorm rule",
+          "commentary brainstorm rule --consensus-mode no_open_blockers --min-response-count 2",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      const opts = this.opts<{
+        enabled?: boolean;
+        disabled?: boolean;
+        blockersBlock?: boolean;
+        blockersDoNotBlock?: boolean;
+        countAgentSignals?: boolean;
+        ignoreAgentSignals?: boolean;
+      }>();
+      await brainstormRuleCommand(runtime, {
+        ...globalOptions(this),
+        ...opts,
+        ...(opts.disabled
+          ? { enabled: false }
+          : opts.enabled !== undefined
+            ? { enabled: opts.enabled }
+            : {}),
+        ...(opts.blockersDoNotBlock
+          ? { blockersBlock: false }
+          : opts.blockersBlock !== undefined
+            ? { blockersBlock: opts.blockersBlock }
+            : {}),
+        ...(opts.ignoreAgentSignals
+          ? { countAgentSignals: false }
+          : opts.countAgentSignals !== undefined
+            ? { countAgentSignals: opts.countAgentSignals }
+            : {}),
+      });
     });
 
   program
@@ -663,6 +925,9 @@ export function buildProgram(runtime: CommandRuntime) {
   program
     .command("sessions")
     .description("List draft review sessions for the authenticated account.")
+    .addOption(
+      new Option("--mode <mode>", "Filter by review mode").choices(["draft", "brainstorming"]),
+    )
     .addHelpText(
       "after",
       helpText("Lists draft reviews visible to the configured token.", [
@@ -670,7 +935,9 @@ export function buildProgram(runtime: CommandRuntime) {
         "commentary sessions --json",
       ]),
     )
-    .action(wrap(runtime, (options) => sessionsCommand(runtime, options)));
+    .action(async function (this: Command) {
+      await sessionsCommand(runtime, { ...globalOptions(this), ...this.opts() });
+    });
 
   program
     .command("revisions")
@@ -690,7 +957,7 @@ export function buildProgram(runtime: CommandRuntime) {
   sync.alias("upload");
   program.addHelpText(
     "after",
-    `\nAgent loop:\n  1. commentary review ./docs/spec.md --title "Spec" --git-base auto\n  2. commentary next-comment --timeout 15m --json\n  3. edit files, then commentary sync --message "Address comments"\n  4. commentary reply <thread-id> "Fixed." --alias "Docs agent"\n\nExamples:\n  npx ${PACKAGE_NAME} review ./docs/spec.md\n  commentary comments --format markdown --open\n  commentary next-comment --json\n  commentary resolve <thread-id> --message "Addressed."\n`,
+    `\nAgent loop:\n  1. commentary review ./docs/spec.md --title "Spec" --git-base auto\n  2. commentary next-comment --timeout 15m --json\n  3. edit files, then commentary sync --message "Address comments"\n  4. commentary reply <thread-id> "Fixed." --alias "Docs agent"\n\nBrainstorming loop:\n  1. commentary review ./docs/spec.md --mode brainstorming\n  2. commentary brainstorm next --timeout 15m --json\n  3. edit files, then commentary sync --addressed-thread <thread-id>\n\nExamples:\n  npx ${PACKAGE_NAME} review ./docs/spec.md\n  commentary comments --format markdown --open\n  commentary next-comment --json\n  commentary brainstorm status --json\n  commentary resolve <thread-id> --message "Addressed."\n`,
   );
   return program;
 }

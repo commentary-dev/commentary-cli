@@ -1,6 +1,88 @@
 export type DraftContentType = "markdown" | "html" | "plain_text";
 export type RequestedContentType = DraftContentType | "auto";
 export type JsonObject = Record<string, unknown>;
+export type DraftReviewMode = "draft" | "brainstorming";
+export type BrainstormingFeedbackSignal =
+  | "agree"
+  | "object"
+  | "blocker"
+  | "needs_clarification"
+  | "addressed";
+export type BrainstormingConsensusState =
+  | "pending"
+  | "accepted_for_change"
+  | "blocked"
+  | "needs_owner_decision"
+  | "rejected"
+  | "out_of_scope"
+  | "applied"
+  | "resolved";
+export type BrainstormingConsensusDecision =
+  | "accepted_for_change"
+  | "rejected"
+  | "out_of_scope"
+  | "clear";
+export type BrainstormingConsensusRuleMode =
+  | "owner_decides"
+  | "no_open_blockers"
+  | "n_of_m"
+  | "required_reviewers";
+
+export type BrainstormingConsensusRule = {
+  enabled?: boolean;
+  mode?: BrainstormingConsensusRuleMode;
+  agreementThreshold?: number;
+  minResponseCount?: number;
+  requiredReviewerIds?: string[];
+  requiredReviewerCondition?:
+    | "all_required_agree"
+    | "no_required_objects"
+    | "owner_plus_one_required_agrees"
+    | "threshold_no_blockers";
+  objectionPolicy?: "block" | "owner_decision" | "ignore";
+  blockersBlock?: boolean;
+  ownerOverrideAllowed?: boolean;
+  countOwnerAgreement?: boolean;
+  countAgentSignals?: boolean;
+  autoApplyAcceptedThreads?: boolean;
+  staleOnNewActivity?: boolean;
+  decisionPollCompletion?: "closed" | "threshold";
+  updatedAt?: string | null;
+  updatedByViewerId?: string | null;
+};
+
+export type BrainstormingThreadConsensus = {
+  state?: BrainstormingConsensusState;
+  actionable?: boolean;
+  source?: string;
+  reason?: string;
+  stale?: boolean;
+  acceptedByRule?: boolean;
+  acceptedByOverride?: boolean;
+  overrideDecision?: Exclude<BrainstormingConsensusDecision, "clear"> | null;
+  appliedRevisions?: JsonObject[];
+  requiredReviewerStatus?: JsonObject;
+};
+
+export type BrainstormingConsensusCounts = {
+  pending?: number;
+  acceptedForChange?: number;
+  blocked?: number;
+  needsOwnerDecision?: number;
+  rejected?: number;
+  outOfScope?: number;
+  applied?: number;
+  resolved?: number;
+};
+
+export type BrainstormingConsensusStateResult = {
+  ok: true;
+  consensusRule: BrainstormingConsensusRule | null;
+  counts: BrainstormingConsensusCounts;
+  filesWithActionableThreads: string[];
+  filesWithBlockedThreads: string[];
+  agentReady: boolean;
+};
 
 export type DraftFileInput = {
   path: string;
@@ -74,6 +156,7 @@ export type DraftReviewAccessGrant = {
 export type DraftReviewSession = {
   id: string;
   title: string;
+  mode?: DraftReviewMode;
   description?: string | null;
   sourceType?: string;
   status?: string;
@@ -110,6 +193,9 @@ export type DraftThread = {
   selectedText?: string | null;
   prefixText?: string | null;
   suffixText?: string | null;
+  feedbackSignals?: JsonObject[];
+  feedbackSummary?: JsonObject | null;
+  consensus?: BrainstormingThreadConsensus | null;
   comments: DraftThreadComment[];
   latestRevision?: {
     id: string;
@@ -124,10 +210,17 @@ export type DraftReviewLiveEventType =
   | "comment.created"
   | "reply.created"
   | "comment.edited"
+  | "comment.resolved"
+  | "comment.reopened"
   | "thread.status_changed"
   | "draft.status_changed"
   | "revision.created"
   | "draft.rebased"
+  | "draft.converted_to_brainstorming"
+  | "feedback_signal.changed"
+  | "feedback.marked_addressed"
+  | "brainstorming.metadata_changed"
+  | "brainstorming.status_changed"
   | "draft.deleted";
 
 export type DraftReviewLiveEvent = {
