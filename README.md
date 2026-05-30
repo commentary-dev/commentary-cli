@@ -13,6 +13,7 @@ commentary review ./docs/spec.md
 ## What It Does
 
 - Creates private Commentary draft reviews from local files or folders.
+- Creates and manages Brainstorming Reviews through the v1 draft-review API.
 - Restores local session metadata from existing draft reviews.
 - Adds new files to existing draft reviews.
 - Uploads new revisions after local edits.
@@ -20,6 +21,7 @@ commentary review ./docs/spec.md
 - Lists comments in text, Markdown, or JSON.
 - Returns currently open comments or waits for the next live draft-review comment event for local agent loops.
 - Replies to and resolves comments.
+- Sets Brainstorming feedback signals, owner consensus decisions, and consensus rules.
 - Shares draft reviews with anyone who has a link or grants access to a specific user.
 - Links a single-file draft review to a GitHub base commit through the Commentary API.
 - Pulls latest reviewed content back to disk with overwrite safeguards.
@@ -61,6 +63,7 @@ COMMENTARY_TOKEN=<token> commentary review ./docs/spec.md
 ```
 
 Tokens are stored outside the project config. Project metadata in `.commentary/session.json` never stores secrets.
+Device-login tokens refresh automatically until the stored refresh token expires or is revoked.
 
 ## Common Workflow
 
@@ -68,6 +71,7 @@ Create a review:
 
 ```bash
 commentary review ./docs/spec.md --title "Product spec"
+commentary review ./docs/spec.md --title "Product spec" --mode brainstorming
 commentary review ./docs/spec.md --title "Product spec" --git-base auto
 ```
 
@@ -84,6 +88,7 @@ Upload a new revision:
 
 ```bash
 commentary sync --message "Address review comments"
+commentary sync --message "Apply accepted feedback" --addressed-thread thread_123
 ```
 
 Restore a previous review into the current directory and sync changed local files:
@@ -142,6 +147,18 @@ Reply and resolve:
 ```bash
 commentary reply <thread-id> "Updated this in revision 3." --alias "Docs agent"
 commentary resolve <thread-id> --message "Addressed in revision 3." --alias "Docs agent"
+commentary resolve --thread -thread_123 --message "Addressed."
+```
+
+Brainstorming Reviews:
+
+```bash
+commentary brainstorm enable
+commentary brainstorm status --json
+commentary brainstorm next --json
+commentary brainstorm signal thread_123 agree --alias "Docs agent"
+commentary brainstorm decide thread_123 accepted_for_change
+commentary brainstorm rule --consensus-mode no_open_blockers --min-response-count 2
 ```
 
 Share a review:
@@ -180,10 +197,18 @@ commentary revision
 commentary rebase
 commentary watch
 commentary comments
+commentary brainstorm enable
+commentary brainstorm status
+commentary brainstorm next
+commentary brainstorm signal <thread-id> <signal>
+commentary brainstorm decide <thread-id> <decision>
+commentary brainstorm rule
 commentary next-comment
 commentary wait-comment
 commentary reply <thread-id> <message>
+commentary reply --thread <thread-id> <message>
 commentary resolve <thread-id>
+commentary resolve --thread <thread-id>
 commentary share
 commentary pull
 commentary open
@@ -309,6 +334,8 @@ commentary review ./docs/spec.md --json
 commentary status --json
 commentary comments --json --open
 commentary next-comment --json
+commentary brainstorm status --json
+commentary brainstorm next --json
 ```
 
 JSON output is intended to be stable across patch releases. Additive fields may appear in minor releases.
@@ -324,6 +351,24 @@ For unattended listeners, use `commentary comments --watch --jsonl`. Stop a runn
 `commentary wait-comment` starts from `cursor=latest` by default, waits for a future `comment.created` or `reply.created` event, prints the first match, and exits. Replies are included by default so a human follow-up to an agent reply wakes the waiting agent. Use `--no-include-replies` to wait only for top-level comments, `--cursor <id>` to resume after a known live-event cursor, `--from beginning` to read historical events, and `--timeout 0` to wait indefinitely. If the event stream disconnects before a matching comment arrives, the CLI reconnects with the latest cursor it has seen.
 
 `commentary wait-comment` is future-event-only by default. It does not list already-open threads.
+
+## Brainstorming Reviews
+
+Use `commentary review --mode brainstorming <paths...>` to create a Brainstorming Review, or `commentary brainstorm enable` to convert the linked draft review. The local `.commentary/session.json` format is unchanged; mode, feedback, and consensus state stay in Commentary.
+
+`commentary comments --consensus-state <state>` filters Brainstorming threads by consensus state. `commentary brainstorm next` defaults to `accepted_for_change`, starts the live event stream, lists current matching threads, and waits only if none are ready.
+
+Feedback signals are:
+
+```text
+agree
+object
+blocker
+needs_clarification
+addressed
+```
+
+`addressed` and `brainstorm decide` are owner/status operations and require the token to have the required Commentary scopes and feature access. To mark accepted feedback as applied while uploading local changes, pass one or more `--addressed-thread <id>` flags to `commentary sync`.
 
 ## GitHub Base Metadata
 
@@ -356,6 +401,8 @@ Commentary-rendered Markdown heading anchors normalize heading text to lowercase
 ## Agent Alias
 
 Use `--alias <name>` on `reply` or `resolve --message` to attribute agent-authored replies. For automation, set `COMMENTARY_AGENT_ALIAS`; an explicit `--alias` flag takes precedence.
+
+Use `--thread <id>` with `reply` or `resolve` when a thread id starts with a dash and could be confused for an option.
 
 `commentary reply` reopens a resolved thread when the reply API response still reports the thread as resolved. This keeps a thread active after a new follow-up response.
 

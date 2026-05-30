@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_BASE_URL } from "./constants.js";
 
-type StoredToken = {
+export type StoredToken = {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: string;
@@ -83,4 +83,18 @@ export async function resolveToken(input: { baseUrl: string; token?: string | nu
   }
   const stored = await getStoredToken(input.baseUrl);
   return stored?.accessToken ?? null;
+}
+
+export function shouldRefreshStoredToken(token: StoredToken, now = Date.now()) {
+  if (!token.refreshToken) {
+    return false;
+  }
+  if (!token.expiresAt) {
+    return true;
+  }
+  const expiresAt = Date.parse(token.expiresAt);
+  if (!Number.isFinite(expiresAt)) {
+    return true;
+  }
+  return expiresAt - now <= 5 * 60 * 1000;
 }

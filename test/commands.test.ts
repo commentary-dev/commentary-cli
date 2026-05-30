@@ -155,6 +155,292 @@ describe("CLI commands", () => {
     expect(synced.lastKnownRevision).toBe(2);
   });
 
+  it("creates a Brainstorming Review with review mode", async () => {
+    await mkdir(path.join(dir, "docs"), { recursive: true });
+    await writeFile(path.join(dir, "docs/spec.md"), "# Spec\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith("/api/v1/draft-reviews") && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toMatchObject({
+          title: "Spec",
+          mode: "brainstorming",
+          sourceType: "cli",
+        });
+        return jsonResponse(
+          {
+            ok: true,
+            sessionId: "draft_1",
+            reviewUrl: "https://commentary.test/review/draft/draft_1",
+            draftReview: {
+              id: "draft_1",
+              title: "Spec",
+              mode: "brainstorming",
+              reviewUrl: "https://commentary.test/review/draft/draft_1",
+              files: [{ id: "file_1", path: "docs/spec.md", contentType: "markdown" }],
+              latestRevision: {
+                id: "rev_1",
+                revisionNumber: 1,
+                files: [
+                  {
+                    fileId: "file_1",
+                    path: "docs/spec.md",
+                    contentType: "markdown",
+                    contentHash: "remote_hash",
+                    sizeBytes: 7,
+                  },
+                ],
+              },
+            },
+          },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    const code = await runCli(
+      [
+        "review",
+        "docs/spec.md",
+        "--title",
+        "Spec",
+        "--mode",
+        "brainstorming",
+        "--no-open",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(output).toContain("Mode: brainstorming");
+  });
+
+  it("runs Brainstorming Review commands against the v1 API", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    const content = "# Spec\n";
+    await writeFile(path.join(dir, "spec.md"), content, "utf8");
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: "..",
+        trackedFiles: [
+          {
+            path: "spec.md",
+            fileId: "file_1",
+            contentType: "markdown",
+            contentHash: contentHash(content),
+            sizeBytes: Buffer.byteLength(content),
+          },
+        ],
+        source: ["review", "spec.md"],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastSyncedAt: "2026-01-01T00:00:00.000Z",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push({
+        url: requestUrl,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (requestUrl.endsWith("/consensus-state")) {
+        return jsonResponse({
+          ok: true,
+          consensusRule: { enabled: true, mode: "owner_decides" },
+          counts: { acceptedForChange: 1, blocked: 0, pending: 0 },
+          filesWithActionableThreads: ["spec.md"],
+          filesWithBlockedThreads: [],
+          agentReady: true,
+        });
+      }
+      if (requestUrl.endsWith("/feedback")) {
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: "thread_1",
+            fileId: null,
+            filePath: "spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/consensus-decision")) {
+        return jsonResponse({
+          ok: true,
+          consensus: { state: "accepted_for_change" },
+          thread: {
+            id: "thread_1",
+            fileId: null,
+            filePath: "spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+      if (requestUrl.endsWith("/consensus-rule")) {
+        return jsonResponse({
+          ok: true,
+          consensusRule: { enabled: true, mode: "no_open_blockers" },
+        });
+      }
+      if (requestUrl.endsWith("/comments?status=open&consensusState=accepted_for_change")) {
+        return jsonResponse({
+          ok: true,
+          threads: [
+            {
+              id: "thread_1",
+              fileId: null,
+              filePath: "spec.md",
+              status: "open",
+              consensus: { state: "accepted_for_change" },
+              comments: [{ bodyMarkdown: "Please update." }],
+            },
+          ],
+        });
+      }
+      if (requestUrl.endsWith("/revisions") && init?.method === "POST") {
+        return jsonResponse(
+          {
+            ok: true,
+            revision: {
+              id: "rev_2",
+              revisionNumber: 2,
+              files: [
+                {
+                  fileId: "file_1",
+                  path: "spec.md",
+                  contentType: "markdown",
+                  contentHash: contentHash(content),
+                  sizeBytes: Buffer.byteLength(content),
+                },
+              ],
+            },
+            addressedThreadIds: ["thread_1"],
+          },
+          201,
+        );
+      }
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+    const runtime = {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    };
+
+    expect(await runCli(["brainstorm", "status", "--token", "token", "--json"], runtime)).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["brainstorm", "signal", "thread_1", "agree", "--clear", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        [
+          "brainstorm",
+          "decide",
+          "thread_1",
+          "accepted_for_change",
+          "--reason",
+          "Ready",
+          "--token",
+          "token",
+          "--json",
+        ],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        [
+          "brainstorm",
+          "rule",
+          "--consensus-mode",
+          "no_open_blockers",
+          "--min-response-count",
+          "2",
+          "--token",
+          "token",
+          "--json",
+        ],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["comments", "--consensus-state", "accepted_for_change", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+    output = "";
+    expect(
+      await runCli(
+        ["sync", "--addressed-thread", "thread_1", "--token", "token", "--json"],
+        runtime,
+      ),
+    ).toBe(0);
+
+    expect(requests.map((request) => [request.method, request.url, request.body])).toEqual([
+      ["GET", "https://commentary.test/api/v1/draft-reviews/draft_1/consensus-state", undefined],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments/thread_1/feedback",
+        { signal: "agree", active: false },
+      ],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments/thread_1/consensus-decision",
+        { decision: "accepted_for_change", reason: "Ready" },
+      ],
+      [
+        "PATCH",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/consensus-rule",
+        { mode: "no_open_blockers", minResponseCount: 2 },
+      ],
+      [
+        "GET",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/comments?status=open&consensusState=accepted_for_change",
+        undefined,
+      ],
+      [
+        "POST",
+        "https://commentary.test/api/v1/draft-reviews/draft_1/revisions",
+        {
+          summary: null,
+          addressedThreadIds: ["thread_1"],
+          files: [
+            {
+              fileId: "file_1",
+              path: "spec.md",
+              content,
+              contentType: "markdown",
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
   it("restores a review session and syncs changed local files", async () => {
     await mkdir(path.join(dir, "docs"), { recursive: true });
     await writeFile(path.join(dir, "docs/spec.md"), "# Local\n", "utf8");
@@ -1447,6 +1733,118 @@ describe("CLI commands", () => {
     }
   });
 
+  it("accepts dash-leading thread ids for reply and resolve", async () => {
+    await mkdir(path.join(dir, ".commentary"), { recursive: true });
+    await writeFile(
+      path.join(dir, ".commentary/session.json"),
+      JSON.stringify({
+        version: 1,
+        reviewSessionId: "draft_1",
+        reviewUrl: "https://commentary.test/review/draft/draft_1",
+        baseUrl: "https://commentary.test",
+        rootPath: ".",
+        trackedFiles: [],
+        source: [],
+        createdAt: "",
+        lastSyncedAt: "",
+        lastKnownRevision: 1,
+      }),
+      "utf8",
+    );
+    const resolvePositionalId = "-PAeryRBpzwlICGZa3vkDevGFJn1p3u1";
+    const resolveFlagId = "-k0_JuhBt2k6Em0zSpQLsRMmo5OApKVM";
+    const replyPositionalId = "-s4ZSiV5JJfYTylI5qQ5OnsIWQn-EdJ2";
+    const replyFlagId = "-threadFlag";
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      const threadId = [resolvePositionalId, resolveFlagId, replyPositionalId, replyFlagId].find(
+        (id) => requestUrl.includes(`/comments/${encodeURIComponent(id)}/`),
+      );
+      if (!threadId) {
+        throw new Error(`Unexpected request ${requestUrl}`);
+      }
+
+      if (requestUrl.endsWith(`/comments/${encodeURIComponent(threadId)}/replies`)) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          bodyMarkdown: expect.any(String),
+        });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: threadId,
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "open",
+            comments: [],
+          },
+        });
+      }
+
+      if (requestUrl.endsWith(`/comments/${encodeURIComponent(threadId)}/status`)) {
+        expect(JSON.parse(String(init?.body))).toEqual({ status: "resolved" });
+        return jsonResponse({
+          ok: true,
+          thread: {
+            id: threadId,
+            fileId: "file_1",
+            filePath: "docs/spec.md",
+            status: "resolved",
+            comments: [],
+          },
+        });
+      }
+
+      throw new Error(`Unexpected request ${requestUrl}`);
+    });
+
+    for (const argv of [
+      ["resolve", resolvePositionalId, "--message", "Fixed positional.", "--token", "token"],
+      ["resolve", "--thread", resolveFlagId, "--message", "Fixed flag.", "--token", "token"],
+      ["reply", replyPositionalId, "Reply positional.", "--token", "token"],
+      ["reply", "--thread", replyFlagId, "Reply flag.", "--token", "token"],
+    ]) {
+      output = "";
+      errors = "";
+      const code = await runCli(argv, {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+      expect(code).toBe(0);
+      expect(errors).toBe("");
+    }
+
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+  });
+
+  it("rejects ambiguous thread id argument forms before calling the API", async () => {
+    const fetchImpl = vi.fn();
+    const cases = [
+      ["resolve", "--message", "Fixed.", "--token", "token"],
+      ["resolve", "thread_1", "--thread", "-thread_2", "--token", "token"],
+      ["reply", "--thread", "-thread_1", "thread_2", "Fixed.", "--token", "token"],
+      ["reply", "-thread_1", "Fixed.", "extra", "--token", "token"],
+    ];
+
+    for (const argv of cases) {
+      output = "";
+      errors = "";
+      const code = await runCli(argv, {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+      expect(code).toBe(2);
+      expect(errors).not.toBe("");
+    }
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("reopens resolved threads after replying", async () => {
     await mkdir(path.join(dir, ".commentary"), { recursive: true });
     await writeFile(
@@ -1591,5 +1989,185 @@ describe("CLI commands", () => {
     expect(output).toContain("Open comments: 2");
     expect(output).toContain("Resolved comments: 1");
     expect(output).toContain("Git base: commentary-dev/commentary-docs sha abc123 path spec.md");
+  });
+
+  it("refreshes expired stored login tokens before running a command", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "refresh-token",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/.well-known/oauth-authorization-server")) {
+          return jsonResponse({
+            issuer: "https://commentary.test",
+            token_endpoint: "https://commentary.test/oauth/token",
+            device_authorization_endpoint: "https://commentary.test/oauth/device/code",
+          });
+        }
+        if (requestUrl.endsWith("/oauth/token")) {
+          expect(JSON.parse(String(init?.body))).toEqual({
+            grant_type: "refresh_token",
+            refresh_token: "refresh-token",
+          });
+          return jsonResponse({
+            access_token: "fresh-access",
+            refresh_token: "fresh-refresh",
+            token_type: "Bearer",
+            expires_in: 3600,
+          });
+        }
+        if (requestUrl.endsWith("/api/v1/draft-reviews")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe(
+            "Bearer fresh-access",
+          );
+          return jsonResponse({ ok: true, draftReviews: [] });
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(["whoami", "--base-url", "https://commentary.test"], {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+
+      expect(code).toBe(0);
+      const config = JSON.parse(await readFile(path.join(configDir, "config.json"), "utf8"));
+      expect(config.tokens["https://commentary.test"].accessToken).toBe("fresh-access");
+      expect(config.tokens["https://commentary.test"].refreshToken).toBe("fresh-refresh");
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it("does not refresh when an explicit token is provided", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "refresh-token",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/api/v1/draft-reviews")) {
+          expect((init?.headers as Record<string, string>).authorization).toBe(
+            "Bearer explicit-token",
+          );
+          return jsonResponse({ ok: true, draftReviews: [] });
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(
+        ["whoami", "--base-url", "https://commentary.test", "--token", "explicit-token"],
+        {
+          cwd: dir,
+          stdout,
+          stderr,
+          fetchImpl: fetchImpl as typeof fetch,
+          isTty: false,
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
+  });
+
+  it("clears stored login state when refresh is rejected", async () => {
+    const previousConfigDir = process.env.COMMENTARY_CONFIG_DIR;
+    const configDir = path.join(dir, "config");
+    process.env.COMMENTARY_CONFIG_DIR = configDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        tokens: {
+          "https://commentary.test": {
+            accessToken: "expired-access",
+            refreshToken: "bad-refresh",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    try {
+      const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+        const requestUrl = String(url);
+        if (requestUrl.endsWith("/.well-known/oauth-authorization-server")) {
+          return jsonResponse({
+            issuer: "https://commentary.test",
+            token_endpoint: "https://commentary.test/oauth/token",
+            device_authorization_endpoint: "https://commentary.test/oauth/device/code",
+          });
+        }
+        if (requestUrl.endsWith("/oauth/token")) {
+          return jsonResponse({ error: "invalid_grant" }, 401);
+        }
+        throw new Error(`Unexpected request ${requestUrl}`);
+      });
+
+      const code = await runCli(["whoami", "--base-url", "https://commentary.test"], {
+        cwd: dir,
+        stdout,
+        stderr,
+        fetchImpl: fetchImpl as typeof fetch,
+        isTty: false,
+      });
+
+      expect(code).toBe(3);
+      expect(errors).toContain("Stored Commentary login expired. Run commentary login.");
+      const config = JSON.parse(await readFile(path.join(configDir, "config.json"), "utf8"));
+      expect(config.tokens["https://commentary.test"]).toBeUndefined();
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.COMMENTARY_CONFIG_DIR;
+      } else {
+        process.env.COMMENTARY_CONFIG_DIR = previousConfigDir;
+      }
+    }
   });
 });

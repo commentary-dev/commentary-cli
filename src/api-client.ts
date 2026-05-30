@@ -1,10 +1,16 @@
 import { CliError, ExitCode } from "./errors.js";
 import { SseParser } from "./sse.js";
 import type {
+  BrainstormingConsensusDecision,
+  BrainstormingConsensusRule,
+  BrainstormingConsensusState,
+  BrainstormingConsensusStateResult,
+  BrainstormingFeedbackSignal,
   DraftReviewAccessGrant,
   DraftFileInput,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
+  DraftReviewMode,
   DraftReviewRevision,
   DraftReviewShareAudience,
   DraftReviewShareLink,
@@ -18,6 +24,7 @@ type ApiClientOptions = {
   baseUrl: string;
   token?: string | null | undefined;
   fetchImpl?: FetchLike | undefined;
+  onAuthRefresh?: (() => Promise<string | null>) | undefined;
 };
 
 type OAuthMetadata = {
@@ -30,13 +37,15 @@ type OAuthMetadata = {
 
 export class CommentaryApiClient {
   readonly baseUrl: string;
-  private readonly token: string | null;
+  private token: string | null;
   private readonly fetchImpl: FetchLike;
+  private readonly onAuthRefresh: (() => Promise<string | null>) | undefined;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token ?? null;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.onAuthRefresh = options.onAuthRefresh;
   }
 
   async getOAuthMetadata() {
@@ -87,13 +96,38 @@ export class CommentaryApiClient {
     });
   }
 
-  async listDraftReviews() {
-    return this.request<{ ok: true; draftReviews: DraftReviewSession[] }>("/api/v1/draft-reviews");
+  async refreshAccessToken(input: { refreshToken: string }) {
+    const metadata = await this.getOAuthMetadata();
+    return this.rawJson<{
+      access_token: string;
+      refresh_token: string;
+      token_type: "Bearer";
+      expires_in: number;
+    }>(metadata.token_endpoint, {
+      auth: false,
+      method: "POST",
+      body: {
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
+      },
+    });
+  }
+
+  async listDraftReviews(input: { mode?: DraftReviewMode | undefined } = {}) {
+    const params = new URLSearchParams();
+    if (input.mode) {
+      params.set("mode", input.mode);
+    }
+    const suffix = params.size ? `?${params}` : "";
+    return this.request<{ ok: true; draftReviews: DraftReviewSession[] }>(
+      `/api/v1/draft-reviews${suffix}`,
+    );
   }
 
   async createDraftReview(input: {
     title: string;
     description?: string | null;
+    mode?: DraftReviewMode | undefined;
     files: DraftFileInput[];
     gitBase?: DraftReviewGitBaseMetadata | null | undefined;
   }) {
@@ -107,6 +141,7 @@ export class CommentaryApiClient {
       body: {
         title: input.title,
         description: input.description,
+        ...(input.mode ? { mode: input.mode } : {}),
         sourceType: "cli",
         ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
         files: input.files.map((file) => ({
@@ -123,6 +158,7 @@ export class CommentaryApiClient {
     title?: string | undefined;
     description?: string | null | undefined;
     status?: string | undefined;
+    mode?: DraftReviewMode | undefined;
     gitBase?: DraftReviewGitBaseMetadata | null | undefined;
   }) {
     return this.request<{ ok: true; draftReview: DraftReviewSession }>(
@@ -133,6 +169,7 @@ export class CommentaryApiClient {
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.mode !== undefined ? { mode: input.mode } : {}),
           ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
         },
       },
@@ -149,22 +186,26 @@ export class CommentaryApiClient {
     sessionId: string;
     summary?: string | null;
     files: DraftFileInput[];
+    addressedThreadIds?: string[] | undefined;
   }) {
-    return this.request<{ ok: true; revision: DraftReviewRevision; noOp?: boolean }>(
-      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/revisions`,
-      {
-        method: "POST",
-        body: {
-          summary: input.summary,
-          files: input.files.map((file) => ({
-            fileId: file.fileId,
-            path: file.path,
-            content: file.content,
-            contentType: file.contentType,
-          })),
-        },
+    return this.request<{
+      ok: true;
+      revision: DraftReviewRevision;
+      noOp?: boolean;
+      addressedThreadIds?: string[];
+    }>(`/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/revisions`, {
+      method: "POST",
+      body: {
+        summary: input.summary,
+        ...(input.addressedThreadIds ? { addressedThreadIds: input.addressedThreadIds } : {}),
+        files: input.files.map((file) => ({
+          fileId: file.fileId,
+          path: file.path,
+          content: file.content,
+          contentType: file.contentType,
+        })),
       },
-    );
+    });
   }
 
   async listRevisions(sessionId: string) {
@@ -218,6 +259,7 @@ export class CommentaryApiClient {
     status?: "open" | "resolved" | undefined;
     filePath?: string | undefined;
     fileId?: string | undefined;
+    consensusState?: BrainstormingConsensusState | undefined;
   }) {
     const params = new URLSearchParams();
     if (input.status) {
@@ -228,6 +270,9 @@ export class CommentaryApiClient {
     }
     if (input.fileId) {
       params.set("fileId", input.fileId);
+    }
+    if (input.consensusState) {
+      params.set("consensusState", input.consensusState);
     }
     const suffix = params.size ? `?${params}` : "";
     return this.request<{ ok: true; threads: DraftThread[] }>(
@@ -264,6 +309,68 @@ export class CommentaryApiClient {
         method: "POST",
         body: { status: input.status },
       },
+    );
+  }
+
+  async updateCommentFeedback(input: {
+    sessionId: string;
+    threadId: string;
+    signal: BrainstormingFeedbackSignal;
+    active?: boolean | undefined;
+    agentAlias?: string | undefined;
+    clientName?: string | undefined;
+  }) {
+    return this.request<{ ok: true; thread?: DraftThread; threadId?: string; signal?: string }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/comments/${encodeURIComponent(input.threadId)}/feedback`,
+      {
+        method: "POST",
+        body: {
+          signal: input.signal,
+          ...(input.active !== undefined ? { active: input.active } : {}),
+          ...(input.agentAlias ? { agentAlias: input.agentAlias } : {}),
+          ...(input.clientName ? { clientName: input.clientName } : {}),
+        },
+      },
+    );
+  }
+
+  async updateCommentConsensusDecision(input: {
+    sessionId: string;
+    threadId: string;
+    decision: BrainstormingConsensusDecision;
+    reason?: string | null | undefined;
+  }) {
+    return this.request<{ ok: true; consensus?: unknown; thread?: DraftThread | null }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/comments/${encodeURIComponent(input.threadId)}/consensus-decision`,
+      {
+        method: "POST",
+        body: {
+          decision: input.decision,
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        },
+      },
+    );
+  }
+
+  async getConsensusRule(sessionId: string) {
+    return this.request<{ ok: true; consensusRule: BrainstormingConsensusRule }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/consensus-rule`,
+    );
+  }
+
+  async updateConsensusRule(input: { sessionId: string; rule: BrainstormingConsensusRule }) {
+    return this.request<{ ok: true; consensusRule: BrainstormingConsensusRule }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/consensus-rule`,
+      {
+        method: "PATCH",
+        body: input.rule,
+      },
+    );
+  }
+
+  async getConsensusState(sessionId: string) {
+    return this.request<BrainstormingConsensusStateResult>(
+      `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/consensus-state`,
     );
   }
 
@@ -401,18 +508,34 @@ export class CommentaryApiClient {
       headers.authorization = `Bearer ${this.token}`;
     }
     try {
-      const requestInit: RequestInit = {
-        method: init.method ?? "GET",
-        headers,
+      const buildRequestInit = (): RequestInit => {
+        const requestInit: RequestInit = {
+          method: init.method ?? "GET",
+          headers: { ...headers },
+        };
+        if (init.signal) {
+          requestInit.signal = init.signal;
+        }
+        if (body !== undefined) {
+          requestInit.body = body;
+        }
+        return requestInit;
       };
-      if (init.signal) {
-        requestInit.signal = init.signal;
+      const response = await this.fetchImpl(url, buildRequestInit());
+      if (response.status !== 401 || !init.auth || !this.onAuthRefresh) {
+        return response;
       }
-      if (body !== undefined) {
-        requestInit.body = body;
+      const refreshedToken = await this.onAuthRefresh();
+      if (!refreshedToken) {
+        return response;
       }
-      return await this.fetchImpl(url, requestInit);
+      this.token = refreshedToken;
+      headers.authorization = `Bearer ${refreshedToken}`;
+      return await this.fetchImpl(url, buildRequestInit());
     } catch (error) {
+      if (error instanceof CliError) {
+        throw error;
+      }
       throw new CliError(
         error instanceof Error ? error.message : "Network request failed.",
         ExitCode.Network,
