@@ -56,6 +56,20 @@ function sseResponse(events: string[]) {
 }
 
 describe("CLI commands", () => {
+  it("prints the package version", async () => {
+    const packageJson = JSON.parse(
+      await readFile(path.join(process.cwd(), "package.json"), "utf8"),
+    ) as {
+      version: string;
+    };
+
+    const code = await runCli(["--version"], { cwd: dir, stdout, stderr, isTty: false });
+
+    expect(code).toBe(0);
+    expect(output.trim()).toBe(packageJson.version);
+    expect(errors).toBe("");
+  });
+
   it("creates a review, writes metadata, and syncs a later revision", async () => {
     await mkdir(path.join(dir, "docs"), { recursive: true });
     await writeFile(path.join(dir, "docs/spec.md"), "# Spec\n", "utf8");

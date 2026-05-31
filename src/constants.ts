@@ -1,6 +1,12 @@
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version: string };
+
 export const DEFAULT_BASE_URL = "https://commentary.dev";
 export const SESSION_FILE = ".commentary/session.json";
 export const PACKAGE_NAME = "@commentary-dev/cli";
+export const PACKAGE_VERSION = packageJson.version;
 export const CLIENT_ID = "commentary-cli";
 export const CLIENT_NAME = "Commentary CLI";
 

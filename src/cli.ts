@@ -29,7 +29,7 @@ import {
   type CommandRuntime,
   type GlobalOptions,
 } from "./commands.js";
-import { PACKAGE_NAME } from "./constants.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./constants.js";
 import { CliError, ExitCode, toErrorMessage } from "./errors.js";
 
 type RunOptions = Partial<CommandRuntime>;
@@ -168,7 +168,7 @@ export function buildProgram(runtime: CommandRuntime) {
     .description(
       "Create and manage Commentary draft review sessions from local Markdown, MDX, HTML, and text files.",
     )
-    .version("0.1.0")
+    .version(PACKAGE_VERSION)
     .showHelpAfterError()
     .exitOverride();
 
