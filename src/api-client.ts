@@ -176,6 +176,13 @@ export class CommentaryApiClient {
     );
   }
 
+  async deleteDraftReview(sessionId: string) {
+    return this.request<{ ok: true; deleted: boolean }>(
+      `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    );
+  }
+
   async getDraftReview(sessionId: string) {
     return this.request<{ ok: true; draftReview: DraftReviewSession }>(
       `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}`,

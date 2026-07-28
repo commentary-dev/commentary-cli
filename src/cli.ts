@@ -1,5 +1,6 @@
 import { Command, Option } from "commander";
 import {
+  abandonCommand,
   brainstormDecideCommand,
   brainstormEnableCommand,
   brainstormNextCommand,
@@ -255,6 +256,29 @@ export function buildProgram(runtime: CommandRuntime) {
     )
     .action(async function (this: Command, sessionId: string) {
       await restoreCommand(runtime, sessionId, { ...globalOptions(this), ...this.opts() });
+    });
+
+  program
+    .command("abandon")
+    .description("Permanently delete a draft review.")
+    .option(
+      "--session <id>",
+      "Delete an explicit draft review session instead of the linked review.",
+    )
+    .option("--yes", "Confirm permanent deletion.")
+    .addHelpText(
+      "after",
+      helpText(
+        "Permanently deletes the selected review from Commentary. Linked local session metadata is removed only after Commentary confirms deletion.",
+        [
+          "commentary abandon --yes",
+          "commentary abandon --session draft_123 --yes",
+          "commentary abandon --yes --json",
+        ],
+      ),
+    )
+    .action(async function (this: Command) {
+      await abandonCommand(runtime, { ...globalOptions(this), ...this.opts() });
     });
 
   program

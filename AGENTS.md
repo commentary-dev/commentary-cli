@@ -36,6 +36,6 @@ This repository builds `@commentary-dev/cli`, the command-line companion for Com
 
 - Default base URL is `https://commentary.dev`.
 - Supported override paths are `--base-url` and `COMMENTARY_BASE_URL`.
-- Required scopes are `commentary.review.read`, `commentary.comments.read`, `commentary.comments.write`, and `commentary.comments.status`.
+- Required scopes are `commentary.review.read`, `commentary.comments.read`, `commentary.comments.write`, `commentary.comments.status`, and `commentary.draft_reviews.delete`.
 - Draft-review limits mirror the app: 20 files, 512 KiB per file, and 2 MiB total per revision.
 - `commentary wait-comment` depends on the v1 live-events endpoint at `/api/v1/draft-reviews/{sessionId}/events`, starts from `cursor=latest` by default, and should use `--json` for agent automation.

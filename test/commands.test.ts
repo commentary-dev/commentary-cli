@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli.js";
+import { REQUIRED_SCOPES } from "../src/constants.js";
 import { contentHash } from "../src/hash.js";
 
 let dir: string;
@@ -55,6 +56,28 @@ function sseResponse(events: string[]) {
   );
 }
 
+async function writeSessionMetadata(sessionId = "draft_1") {
+  const sessionFilePath = path.join(dir, ".commentary/session.json");
+  await mkdir(path.dirname(sessionFilePath), { recursive: true });
+  await writeFile(
+    sessionFilePath,
+    `${JSON.stringify({
+      version: 1,
+      reviewSessionId: sessionId,
+      reviewUrl: `https://commentary.test/review/draft/${sessionId}`,
+      baseUrl: "https://commentary.test",
+      rootPath: "..",
+      trackedFiles: [],
+      source: [],
+      createdAt: "",
+      lastSyncedAt: "",
+      lastKnownRevision: 1,
+    })}\n`,
+    "utf8",
+  );
+  return sessionFilePath;
+}
+
 describe("CLI commands", () => {
   it("prints the package version", async () => {
     const packageJson = JSON.parse(
@@ -68,6 +91,140 @@ describe("CLI commands", () => {
     expect(code).toBe(0);
     expect(output.trim()).toBe(packageJson.version);
     expect(errors).toBe("");
+  });
+
+  it("requests the draft review delete scope during device login", () => {
+    expect(REQUIRED_SCOPES).toContain("commentary.draft_reviews.delete");
+  });
+
+  it("requires --yes before abandoning a draft review", async () => {
+    const sessionFilePath = await writeSessionMetadata();
+    const originalMetadata = await readFile(sessionFilePath, "utf8");
+    const fetchImpl = vi.fn();
+
+    const code = await runCli(["abandon", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(6);
+    expect(errors).toContain("Rerun with --yes");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await readFile(sessionFilePath, "utf8")).toBe(originalMetadata);
+  });
+
+  it("abandons the linked review and removes only local session metadata", async () => {
+    const sessionFilePath = await writeSessionMetadata();
+    const sourceFilePath = path.join(dir, "spec.md");
+    await writeFile(sourceFilePath, "# Spec\n", "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_1");
+      expect(init?.method).toBe("DELETE");
+      return jsonResponse({ ok: true, deleted: true });
+    });
+
+    const code = await runCli(["abandon", "--yes", "--json", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output)).toEqual({
+      ok: true,
+      sessionId: "draft_1",
+      deleted: true,
+      sessionFileRemoved: true,
+    });
+    await expect(readFile(sessionFilePath, "utf8")).rejects.toThrow();
+    await expect(readFile(sourceFilePath, "utf8")).resolves.toBe("# Spec\n");
+  });
+
+  it("abandons an explicit session without touching local metadata", async () => {
+    const sessionFilePath = await writeSessionMetadata("draft_local");
+    const originalMetadata = await readFile(sessionFilePath, "utf8");
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft_remote");
+      expect(init?.method).toBe("DELETE");
+      return jsonResponse({ ok: true, deleted: true });
+    });
+
+    const code = await runCli(
+      [
+        "abandon",
+        "--session",
+        "draft_remote",
+        "--yes",
+        "--json",
+        "--base-url",
+        "https://commentary.test",
+        "--token",
+        "token",
+      ],
+      { cwd: dir, stdout, stderr, fetchImpl: fetchImpl as typeof fetch, isTty: false },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output)).toMatchObject({
+      sessionId: "draft_remote",
+      deleted: true,
+      sessionFileRemoved: false,
+    });
+    expect(await readFile(sessionFilePath, "utf8")).toBe(originalMetadata);
+  });
+
+  it("preserves local metadata when deletion is not confirmed", async () => {
+    const sessionFilePath = await writeSessionMetadata();
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, deleted: false }));
+
+    const code = await runCli(["abandon", "--yes", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(5);
+    expect(errors).toContain("did not confirm deletion");
+    await expect(readFile(sessionFilePath, "utf8")).resolves.toContain("draft_1");
+  });
+
+  it("preserves local metadata when the abandon API request fails", async () => {
+    const sessionFilePath = await writeSessionMetadata();
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: "Missing scope." }, 403));
+
+    const code = await runCli(["abandon", "--yes", "--token", "token"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      fetchImpl: fetchImpl as typeof fetch,
+      isTty: false,
+    });
+
+    expect(code).toBe(3);
+    expect(errors).toContain("Missing scope.");
+    await expect(readFile(sessionFilePath, "utf8")).resolves.toContain("draft_1");
+  });
+
+  it("documents abandon safety in command help", async () => {
+    const code = await runCli(["abandon", "--help"], {
+      cwd: dir,
+      stdout,
+      stderr,
+      isTty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(output).toContain("Permanently delete a draft review");
+    expect(output).toContain("--session <id>");
+    expect(output).toContain("--yes");
+    expect(output).toContain("commentary abandon --yes");
   });
 
   it("creates a review, writes metadata, and syncs a later revision", async () => {
