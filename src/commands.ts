@@ -21,7 +21,7 @@ import {
   type StoredToken,
 } from "./config.js";
 import { normalizeReviewPath } from "./content.js";
-import { CliError, ExitCode } from "./errors.js";
+import { CliError, ExitCode, toErrorMessage } from "./errors.js";
 import { collectFiles, readTrackedFiles, toTrackedFiles } from "./files.js";
 import {
   defaultReviewRootForGitBase,
@@ -35,6 +35,7 @@ import {
   formatCommentsMarkdown,
   formatCommentsText,
   formatDraftRebased,
+  formatDraftReviewAbandoned,
   formatDraftReviewShared,
   formatDraftReviewShares,
   formatGitBase,
@@ -667,6 +668,57 @@ export async function whoamiCommand(runtime: CommandRuntime, options: GlobalOpti
     writeText(
       runtime.stdout,
       `Authenticated for ${client.baseUrl}. Accessible draft reviews: ${result.draftReviews.length}`,
+    );
+  }
+}
+
+export async function abandonCommand(
+  runtime: CommandRuntime,
+  options: GlobalOptions & { session?: string | undefined; yes?: boolean | undefined },
+) {
+  if (!options.yes) {
+    throw new CliError(
+      "Abandoning a draft review permanently deletes it. Rerun with --yes to continue.",
+      ExitCode.Safety,
+    );
+  }
+
+  const { loaded, sessionId, client } = await resolveDraftSession({ runtime, options });
+  const result = await client.deleteDraftReview(sessionId);
+  if (!result.deleted) {
+    throw new CliError(
+      `Commentary did not confirm deletion of draft review ${sessionId}.`,
+      ExitCode.Api,
+    );
+  }
+
+  let sessionFileRemoved = false;
+  if (loaded) {
+    try {
+      await fs.rm(loaded.filePath, { force: true });
+      sessionFileRemoved = true;
+    } catch (error) {
+      throw new CliError(
+        `Draft review ${sessionId} was deleted, but local session metadata could not be removed from ${loaded.filePath}: ${toErrorMessage(error)} Remove it manually.`,
+        ExitCode.General,
+      );
+    }
+  }
+
+  if (options.json) {
+    writeJson(runtime.stdout, {
+      ok: true,
+      sessionId,
+      deleted: true,
+      sessionFileRemoved,
+    });
+  } else {
+    writeText(
+      runtime.stdout,
+      formatDraftReviewAbandoned({
+        sessionId,
+        sessionFilePath: sessionFileRemoved ? loaded?.filePath : undefined,
+      }),
     );
   }
 }

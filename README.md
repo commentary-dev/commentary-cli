@@ -99,6 +99,15 @@ commentary restore draft_123 --dry-run --json
 commentary restore draft_123 --yes
 ```
 
+Permanently abandon a review and remove its linked local session metadata:
+
+```bash
+commentary abandon --yes
+commentary abandon --session draft_123 --yes
+```
+
+Abandon requires explicit confirmation because deletion is permanent. When `--session` is used, the CLI deletes only the remote review and does not change local session metadata.
+
 Add files to the existing review and upload a new revision:
 
 ```bash
@@ -191,6 +200,7 @@ commentary logout
 commentary whoami
 commentary review <paths...>
 commentary restore <session-id>
+commentary abandon --yes
 commentary track <paths...>
 commentary sync
 commentary revision
@@ -336,9 +346,12 @@ commentary comments --json --open
 commentary next-comment --json
 commentary brainstorm status --json
 commentary brainstorm next --json
+commentary abandon --yes --json
 ```
 
 JSON output is intended to be stable across patch releases. Additive fields may appear in minor releases.
+
+`commentary abandon` uses `DELETE /api/v1/draft-reviews/{sessionId}` and requires the `commentary.draft_reviews.delete` scope. Stored device-login grants created before this scope was added may require `commentary logout` followed by `commentary login` before they can abandon reviews.
 
 ## Live Comment Waiting
 

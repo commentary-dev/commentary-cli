@@ -46,6 +46,20 @@ export function formatReviewCreated(input: {
   ].join("\n");
 }
 
+export function formatDraftReviewAbandoned(input: {
+  sessionId: string;
+  sessionFilePath?: string | undefined;
+}) {
+  return [
+    "Abandoned Commentary review",
+    "",
+    `Session: ${input.sessionId}`,
+    input.sessionFilePath ? `Removed local session metadata at ${input.sessionFilePath}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function formatReviewRestored(input: {
   metadata: SessionMetadata;
   sessionFilePath: string;

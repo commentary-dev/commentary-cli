@@ -138,6 +138,29 @@ describe("CommentaryApiClient", () => {
     });
   });
 
+  it("deletes draft reviews with the expected HTTP shape", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("https://commentary.test/api/v1/draft-reviews/draft%2Fone");
+      expect(init?.method).toBe("DELETE");
+      expect((init?.headers as Record<string, string>).authorization).toBe("Bearer token");
+      expect(init?.body).toBeUndefined();
+      return new Response(JSON.stringify({ ok: true, deleted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const client = new CommentaryApiClient({
+      baseUrl: "https://commentary.test",
+      token: "token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.deleteDraftReview("draft/one")).resolves.toEqual({
+      ok: true,
+      deleted: true,
+    });
+  });
+
   it("manages draft review shares", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
