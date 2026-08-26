@@ -36,6 +36,67 @@ export type InteractionListPage = {
   data: Interaction[];
   nextCursor: string | null;
 };
+export type InteractionDecisionOutcome =
+  | "approve"
+  | "reject"
+  | "acknowledge"
+  | "choose"
+  | "answer"
+  | "comment"
+  | "request_revision"
+  | "snooze";
+export type InteractionAgentDecisionReceipt = {
+  id: string;
+  interactionId: string;
+  revisionId: string;
+  actionId: string;
+  proposalFingerprint: string;
+  semanticAction: string;
+  outcome: InteractionDecisionOutcome;
+  decidedAt: string;
+  expiresAt: string | null;
+  terminalState: string;
+  purged: boolean;
+  contentPurgedAt: string | null;
+};
+export type InteractionDecisionPolling = {
+  complete: boolean;
+  timedOut?: boolean;
+  retryAfterMs: number | null;
+};
+export type InteractionFulfillmentStatus =
+  | "received"
+  | "started"
+  | "completed"
+  | "failed"
+  | "unknown";
+export type InteractionFulfillmentEvidence = JsonObject;
+export type InteractionFulfillmentReport = JsonObject & {
+  id: string;
+  interactionId: string;
+  decisionId: string;
+  revisionId: string;
+  actionId: string;
+  proposalFingerprint: string;
+  status: InteractionFulfillmentStatus;
+  reportingAgent: { type: "agent"; id: string };
+  evidence: InteractionFulfillmentEvidence | null;
+  reportedAt: string;
+  contentPurgeAfter: string | null;
+  contentPurgedAt: string | null;
+  selfReported: true;
+  verified: false;
+};
+export type InteractionFulfillment = {
+  current: InteractionFulfillmentReport | null;
+  history: InteractionFulfillmentReport[];
+};
+export type InteractionFulfillmentReportResult = {
+  outcome: "recorded" | "replayed";
+  report: InteractionFulfillmentReport;
+  current: InteractionFulfillmentReport;
+  interaction: Interaction;
+};
 export type DraftReviewMode = "draft" | "brainstorming";
 export type BrainstormingFeedbackSignal =
   | "agree"

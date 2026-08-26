@@ -1,0 +1,62 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`INTERACTION-006 Decision receipt CLI > gets an opaque privacy-safe receipt without exposing a Decision write > decision get JSON 1`] = `
+{
+  "correlationId": "get-run",
+  "decision": {
+    "actionId": "ixa_opaque",
+    "contentPurgedAt": null,
+    "decidedAt": "2026-08-27T10:00:00.000Z",
+    "expiresAt": null,
+    "id": "ixd_opaque",
+    "interactionId": "ixn_opaque",
+    "outcome": "approve",
+    "proposalFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "purged": false,
+    "revisionId": "ixr_opaque",
+    "semanticAction": "approve",
+    "terminalState": "recorded",
+  },
+  "ok": true,
+  "polling": {
+    "complete": true,
+    "retryAfterMs": null,
+  },
+}
+`;
+
+exports[`INTERACTION-007 Fulfillment report CLI > passes the exact fingerprint and bounded evidence with retry-safe replay > fulfillment report JSON 1`] = `
+{
+  "correlationId": "run-42",
+  "fulfillment": {
+    "current": {
+      "actionId": "ixa_opaque",
+      "contentPurgedAt": null,
+      "decisionId": "ixd_opaque",
+      "id": "ixf_opaque",
+      "interactionId": "ixn_opaque",
+      "proposalFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reportedAt": "2026-08-27T10:01:00.000Z",
+      "revisionId": "ixr_opaque",
+      "selfReported": true,
+      "status": "received",
+      "verified": false,
+    },
+    "report": {
+      "actionId": "ixa_opaque",
+      "contentPurgedAt": null,
+      "decisionId": "ixd_opaque",
+      "id": "ixf_opaque",
+      "interactionId": "ixn_opaque",
+      "proposalFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reportedAt": "2026-08-27T10:01:00.000Z",
+      "revisionId": "ixr_opaque",
+      "selfReported": true,
+      "status": "received",
+      "verified": false,
+    },
+  },
+  "idempotencyReplayed": false,
+  "ok": true,
+}
+`;

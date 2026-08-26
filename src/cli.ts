@@ -31,6 +31,7 @@ import {
   type GlobalOptions,
 } from "./commands.js";
 import { addInteractionCommands } from "./interaction-commands.js";
+import { addDecisionAndFulfillmentCommands } from "./decision-commands.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./constants.js";
 import { CliError, ExitCode, toErrorMessage } from "./errors.js";
 
@@ -195,6 +196,7 @@ export function buildProgram(runtime: CommandRuntime) {
     );
 
   addInteractionCommands(program, runtime);
+  addDecisionAndFulfillmentCommands(program, runtime);
 
   program
     .command("login")
@@ -1010,7 +1012,10 @@ export async function runCli(argv = process.argv.slice(2), options?: RunOptions)
       return commanderError.exitCode ?? ExitCode.Usage;
     }
     if (error instanceof CliError) {
-      if (argv.includes("--json") && argv.includes("interaction")) {
+      if (
+        argv.includes("--json") &&
+        ["interaction", "decision", "fulfillment"].some((command) => argv.includes(command))
+      ) {
         runtime.stderr.write(
           `${JSON.stringify({
             ok: false,

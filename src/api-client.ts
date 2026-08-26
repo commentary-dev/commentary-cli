@@ -17,7 +17,12 @@ import type {
   DraftReviewSession,
   DraftThread,
   Interaction,
+  InteractionAgentDecisionReceipt,
   InteractionContent,
+  InteractionDecisionPolling,
+  InteractionFulfillmentEvidence,
+  InteractionFulfillmentReportResult,
+  InteractionFulfillmentStatus,
   InteractionListPage,
   InteractionResource,
   InteractionState,
@@ -487,6 +492,59 @@ export class CommentaryApiClient {
         method: "DELETE",
         headers: {
           "If-Match": input.etag,
+          "Idempotency-Key": input.idempotencyKey,
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      },
+    );
+  }
+
+  async getInteractionDecision(input: {
+    interactionId: string;
+    decisionId?: string | undefined;
+    afterDecisionId?: string | undefined;
+    waitMs?: number | undefined;
+    correlationId?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }) {
+    const params = new URLSearchParams();
+    if (input.decisionId) params.set("decisionId", input.decisionId);
+    if (input.afterDecisionId) params.set("after", input.afterDecisionId);
+    if (input.waitMs !== undefined) params.set("waitMs", String(input.waitMs));
+    const suffix = params.size ? `?${params}` : "";
+    return this.interactionRequest<{
+      data: InteractionAgentDecisionReceipt | null;
+      polling: InteractionDecisionPolling;
+    }>(`/api/v1/interactions/${encodeURIComponent(input.interactionId)}/decisions${suffix}`, {
+      ...(input.correlationId ? { headers: { "X-Correlation-Id": input.correlationId } } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  }
+
+  async reportInteractionFulfillment(input: {
+    interactionId: string;
+    decisionId: string;
+    revisionId: string;
+    actionId: string;
+    proposalFingerprint: string;
+    status: InteractionFulfillmentStatus;
+    evidence?: InteractionFulfillmentEvidence | undefined;
+    idempotencyKey: string;
+    correlationId?: string | undefined;
+  }) {
+    return this.interactionRequest<{ data: InteractionFulfillmentReportResult }>(
+      `/api/v1/interactions/${encodeURIComponent(input.interactionId)}/fulfillment`,
+      {
+        method: "POST",
+        body: {
+          decisionId: input.decisionId,
+          revisionId: input.revisionId,
+          actionId: input.actionId,
+          proposalFingerprint: input.proposalFingerprint,
+          status: input.status,
+          ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+        },
+        headers: {
           "Idempotency-Key": input.idempotencyKey,
           ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
         },

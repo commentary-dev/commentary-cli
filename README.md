@@ -232,6 +232,9 @@ commentary interaction list
 commentary interaction revise <interaction-id>
 commentary interaction cancel <interaction-id>
 commentary interaction wait <interaction-id>
+commentary decision get <interaction-id> <decision-id>
+commentary decision wait <interaction-id>
+commentary fulfillment report <interaction-id>
 ```
 
 Global options:
@@ -309,8 +312,9 @@ App-side draft review limits are enforced before upload:
 
 Interaction commands are thin mappings to '/api/v1/interactions'. The server remains
 authoritative for lifecycle, validation, Resource authorization, scopes, retries, and
-policy. The CLI does not use MCP, keep local Interaction state, or expose Decision or
-Fulfillment commands.
+policy. The CLI does not use MCP or keep local Interaction state. Decision commands
+are read-only; no CLI or agent command can approve, reject, choose, answer, or
+otherwise write a human Decision.
 
 Create content in a file so request bodies and sensitive review context do not enter
 process arguments:
@@ -392,6 +396,81 @@ written as one JSON object to stderr with 'code', 'message', and 'exitCode', plu
 server correlation and retry fields when supplied. Tokens and payload content are
 never logged.
 
+## Decision Receipts and Fulfillment
+
+`decision get` and `decision wait` are HTTP-only, privacy-safe reads from
+`GET /api/v1/interactions/{interactionId}/decisions`. Opaque handles are passed
+back unchanged. Receipts include the exact revision, action, approved proposal
+fingerprint, semantic outcome, timestamps, terminal state, and purge state; they
+exclude human identity, Resource data, consequence content, and action snapshots.
+The CLI deliberately has no Decision mutation command.
+
+```bash
+commentary decision get ixn_123 ixd_123 --json
+commentary decision wait ixn_123 --timeout 300 --poll-interval 1000 --json
+commentary decision wait ixn_123 --after ixd_previous --timeout 300 --json
+```
+
+Decision waits are interruptible with Ctrl-C. The overall timeout is bounded from
+1–3600 seconds and polling from 250–60000 milliseconds. A positive receipt exits 0. `reject`, `request_revision`, or a `rejected`, `canceled`, or `expired`
+terminal state exits 10 after writing the receipt. A timeout exits 124 and an
+interrupt exits 130.
+
+`fulfillment report` appends an agent self-report to
+`POST /api/v1/interactions/{interactionId}/fulfillment`. It requires the exact
+Decision, revision, action, and lowercase 64-character SHA-256 proposal
+fingerprint from the approved receipt. The server enforces scope, ownership,
+approval, lifecycle ordering, expiry, revocation, and fingerprint matching.
+
+```bash
+commentary fulfillment report ixn_123 \
+  --decision-id ixd_123 \
+  --revision-id ixr_123 \
+  --action-id ixa_123 \
+  --proposal-fingerprint 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --status received \
+  --idempotency-key receive-42 \
+  --json
+
+commentary fulfillment report ixn_123 \
+  --decision-id ixd_123 \
+  --revision-id ixr_123 \
+  --action-id ixa_123 \
+  --proposal-fingerprint 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --status completed \
+  --idempotency-key complete-42 \
+  --evidence-file evidence.json \
+  --json
+```
+
+Evidence is optional structured JSON read only through `--evidence-file` or
+`--evidence-stdin`, never a content-bearing argument. It is limited to 8 KiB,
+must be an object, and rejects credential-shaped fields. Evidence and reporting
+identity are omitted from normal JSON and human output. A successful report exits
+0 even when its self-reported status is `failed` or `unknown`: acceptance of a
+report does not claim successful execution or verified provider proof.
+
+Decision and Fulfillment exit codes use the same stable transport contract:
+
+| Code | Meaning                                                                     |
+| ---: | --------------------------------------------------------------------------- |
+|    0 | Positive Decision receipt or accepted Fulfillment report                    |
+|    2 | CLI usage error                                                             |
+|    3 | Authentication, ownership, or scope denial                                  |
+|    4 | Network failure                                                             |
+|    5 | Other API failure                                                           |
+|    8 | Validation, not-found, fingerprint/idempotency mismatch, or server conflict |
+|    9 | Server failure                                                              |
+|   10 | Negative/rejected/canceled/expired Decision                                 |
+|  124 | Decision wait timeout                                                       |
+|  130 | Decision wait interrupted                                                   |
+
+Successful Decision JSON contains `ok`, `decision`, `polling`, and
+`correlationId`. Successful Fulfillment JSON contains `ok`, redacted
+`fulfillment.report` and `fulfillment.current`, `correlationId`, and
+`idempotencyReplayed`. Errors are one JSON object on stderr. API tokens,
+evidence, and Decision content are never included in diagnostics.
+
 ## Agent Workflow
 
 1. Ask your agent to create or update a Markdown, MDX, HTML, or text file.
@@ -443,6 +522,8 @@ commentary brainstorm next --json
 commentary abandon --yes --json
 commentary interaction list --json
 commentary interaction wait ixn_123 --timeout 300 --json
+commentary decision wait ixn_123 --timeout 300 --json
+commentary fulfillment report ixn_123 --decision-id ixd_123 --revision-id ixr_123 --action-id ixa_123 --proposal-fingerprint <sha256> --status received --idempotency-key receive-42 --json
 ```
 
 JSON output is intended to be stable across patch releases. Additive fields may appear in minor releases.
@@ -453,6 +534,12 @@ Interaction commands require the matching 'commentary.interactions.create',
 '.read', '.update', or '.cancel' scope. Stored device-login grants created before
 these scopes were added may require 'commentary logout' followed by 'commentary
 login'.
+
+Decision receipt reads require `commentary.interactions.read`. Fulfillment
+reports require `commentary.interactions.fulfillment`; these scopes never grant
+human Decision authority. Existing configurations remain valid, but stored
+device-login grants created before the Fulfillment scope was added may require a
+fresh login.
 
 ## Live Comment Waiting
 
