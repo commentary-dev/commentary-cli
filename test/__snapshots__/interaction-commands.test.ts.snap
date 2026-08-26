@@ -1,0 +1,43 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`INTERACTION-003 CLI lifecycle > creates and replays with payload content kept out of argv > interaction create JSON 1`] = `
+{
+  "correlationId": "run-42",
+  "etag": ""ixn_opaque:v1"",
+  "idempotencyReplayed": false,
+  "interaction": {
+    "currentRevisionId": "ixr_1",
+    "id": "ixn_opaque",
+    "resource": {
+      "id": "draft_opaque",
+      "type": "draft_review",
+    },
+    "state": "active",
+    "version": 1,
+  },
+  "ok": true,
+}
+`;
+
+exports[`INTERACTION-003 CLI lifecycle > gets and lists opaque ids with filters and cursor pagination > interaction list JSON 1`] = `
+{
+  "correlationId": "list-run",
+  "interactions": [
+    {
+      "currentRevisionId": "ixr_1",
+      "id": "ixn_opaque",
+      "resource": {
+        "id": "draft_opaque",
+        "type": "draft_review",
+      },
+      "state": "active",
+      "version": 1,
+    },
+  ],
+  "ok": true,
+  "page": {
+    "limit": 25,
+    "nextCursor": "cursor_opaque",
+  },
+}
+`;

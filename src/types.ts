@@ -1,6 +1,41 @@
 export type DraftContentType = "markdown" | "html" | "plain_text";
 export type RequestedContentType = DraftContentType | "auto";
 export type JsonObject = Record<string, unknown>;
+export type InteractionState =
+  | "draft"
+  | "active"
+  | "waiting_for_human"
+  | "waiting_for_agent"
+  | "completed"
+  | "rejected"
+  | "canceled"
+  | "expired"
+  | "failed";
+export type InteractionResourceType =
+  | "repository"
+  | "pull_request"
+  | "document"
+  | "draft_review"
+  | "form"
+  | "research_study"
+  | "knowledge_brain"
+  | "web_app_review";
+export type InteractionResource = { type: InteractionResourceType; id: string };
+export type InteractionContent = JsonObject & { title: string };
+export type Interaction = JsonObject & {
+  id: string;
+  state: InteractionState;
+  version: number;
+  resource: InteractionResource;
+  currentRevisionId: string;
+  revisions?: JsonObject[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+export type InteractionListPage = {
+  data: Interaction[];
+  nextCursor: string | null;
+};
 export type DraftReviewMode = "draft" | "brainstorming";
 export type BrainstormingFeedbackSignal =
   | "agree"

@@ -30,6 +30,7 @@ import {
   type CommandRuntime,
   type GlobalOptions,
 } from "./commands.js";
+import { addInteractionCommands } from "./interaction-commands.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./constants.js";
 import { CliError, ExitCode, toErrorMessage } from "./errors.js";
 
@@ -45,6 +46,8 @@ function runtimeFromOptions(options?: RunOptions): CommandRuntime {
     cwd: options?.cwd ?? process.cwd(),
     stdout: options?.stdout ?? process.stdout,
     stderr: options?.stderr ?? process.stderr,
+    stdin: options?.stdin ?? process.stdin,
+    signal: options?.signal,
     fetchImpl: options?.fetchImpl,
     isTty: options?.isTty ?? process.stdout.isTTY,
   };
@@ -190,6 +193,8 @@ export function buildProgram(runtime: CommandRuntime) {
       "--session-file <path>",
       "Path to project session metadata. Defaults to .commentary/session.json.",
     );
+
+  addInteractionCommands(program, runtime);
 
   program
     .command("login")
@@ -1005,7 +1010,22 @@ export async function runCli(argv = process.argv.slice(2), options?: RunOptions)
       return commanderError.exitCode ?? ExitCode.Usage;
     }
     if (error instanceof CliError) {
-      runtime.stderr.write(`${error.message}\n`);
+      if (argv.includes("--json") && argv.includes("interaction")) {
+        runtime.stderr.write(
+          `${JSON.stringify({
+            ok: false,
+            error: {
+              code: error.code ?? "cli_error",
+              message: error.message,
+              exitCode: error.exitCode,
+              ...(error.correlationId ? { correlationId: error.correlationId } : {}),
+              ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
+            },
+          })}\n`,
+        );
+      } else {
+        runtime.stderr.write(`${error.message}\n`);
+      }
       return error.exitCode;
     }
     runtime.stderr.write(`${toErrorMessage(error)}\n`);

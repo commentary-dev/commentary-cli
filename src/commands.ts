@@ -77,6 +77,8 @@ export type CommandRuntime = {
   cwd: string;
   stdout: Writer;
   stderr: Writer;
+  stdin?: NodeJS.ReadableStream | undefined;
+  signal?: AbortSignal | undefined;
   fetchImpl?: typeof fetch | undefined;
   isTty?: boolean | undefined;
 };
@@ -95,7 +97,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function makeClient(runtime: CommandRuntime, options: GlobalOptions) {
+export async function makeClient(runtime: CommandRuntime, options: GlobalOptions) {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const explicitToken = options.token?.trim() || process.env.COMMENTARY_TOKEN?.trim();
   if (explicitToken) {

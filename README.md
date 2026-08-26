@@ -26,6 +26,7 @@ commentary review ./docs/spec.md
 - Links a single-file draft review to a GitHub base commit through the Commentary API.
 - Pulls latest reviewed content back to disk with overwrite safeguards.
 - Opens the review URL in the browser when available.
+- Creates, reads, lists, revises, cancels, and waits for durable Interactions through HTTP v1.
 
 It does not create GitHub branches, commits, pull requests, provider comments, or GitHub tokens.
 
@@ -225,6 +226,12 @@ commentary open
 commentary status
 commentary sessions
 commentary revisions
+commentary interaction create
+commentary interaction get <interaction-id>
+commentary interaction list
+commentary interaction revise <interaction-id>
+commentary interaction cancel <interaction-id>
+commentary interaction wait <interaction-id>
 ```
 
 Global options:
@@ -298,6 +305,93 @@ App-side draft review limits are enforced before upload:
 - 512 KiB per file
 - 2 MiB total per revision
 
+## Interaction Lifecycle
+
+Interaction commands are thin mappings to '/api/v1/interactions'. The server remains
+authoritative for lifecycle, validation, Resource authorization, scopes, retries, and
+policy. The CLI does not use MCP, keep local Interaction state, or expose Decision or
+Fulfillment commands.
+
+Create content in a file so request bodies and sensitive review context do not enter
+process arguments:
+
+```bash
+commentary interaction create \
+  --resource-type draft_review \
+  --resource-id draft_123 \
+  --file interaction.json \
+  --idempotency-key agent-run-42 \
+  --correlation-id agent-run-42 \
+  --json
+
+printf '%s' '{"title":"Review the updated plan"}' |
+  commentary interaction create \
+    --resource-type draft_review \
+    --resource-id draft_123 \
+    --stdin \
+    --idempotency-key agent-run-43 \
+    --json
+```
+
+The JSON file or standard input is the Interaction 'content' object. Supported
+Resource types are 'repository', 'pull_request', 'document', 'draft_review', 'form',
+'research_study', 'knowledge_brain', and 'web_app_review'. Ids and cursors are opaque
+and must be passed back unchanged.
+
+Read and paginate:
+
+```bash
+commentary interaction get ixn_123 --json
+commentary interaction list --state waiting_for_human --limit 25 --json
+commentary interaction list --cursor cursor_from_previous_page --json
+```
+
+Mutations require the exact strong ETag returned by 'get', 'create', or the previous
+mutation, plus a caller-generated idempotency key:
+
+```bash
+commentary interaction revise ixn_123 \
+  --etag '"ixn_123:v1"' \
+  --file revised-content.json \
+  --idempotency-key revise-42 \
+  --json
+
+commentary interaction cancel ixn_123 \
+  --etag '"ixn_123:v2"' \
+  --idempotency-key cancel-42 \
+  --json
+```
+
+Wait is interruptible with Ctrl-C and always bounded. Timeout is 1–3600 seconds and
+poll interval is 250–60000 milliseconds:
+
+```bash
+commentary interaction wait ixn_123 --timeout 300 --poll-interval 1000 --json
+```
+
+Interaction exit codes are stable:
+
+| Code | Meaning                                                                  |
+| ---: | ------------------------------------------------------------------------ |
+|    0 | Terminal success ('completed') or a successful non-wait command          |
+|    2 | CLI usage error                                                          |
+|    3 | Authentication or scope denial                                           |
+|    4 | Network failure                                                          |
+|    5 | Other API failure                                                        |
+|    7 | Missing or stale ETag / precondition failure                             |
+|    8 | Validation, not-found, or idempotency conflict                           |
+|    9 | Server failure                                                           |
+|   10 | Terminal negative state ('rejected', 'canceled', 'expired', or 'failed') |
+|  124 | Wait timeout                                                             |
+|  130 | Wait interrupted                                                         |
+
+Every successful Interaction '--json' response includes 'ok'; item commands include
+'interaction', 'etag', 'correlationId', and 'idempotencyReplayed'. Lists include
+'interactions', 'page.limit', 'page.nextCursor', and 'correlationId'. Errors are
+written as one JSON object to stderr with 'code', 'message', and 'exitCode', plus
+server correlation and retry fields when supplied. Tokens and payload content are
+never logged.
+
 ## Agent Workflow
 
 1. Ask your agent to create or update a Markdown, MDX, HTML, or text file.
@@ -347,11 +441,18 @@ commentary next-comment --json
 commentary brainstorm status --json
 commentary brainstorm next --json
 commentary abandon --yes --json
+commentary interaction list --json
+commentary interaction wait ixn_123 --timeout 300 --json
 ```
 
 JSON output is intended to be stable across patch releases. Additive fields may appear in minor releases.
 
 `commentary abandon` uses `DELETE /api/v1/draft-reviews/{sessionId}` and requires the `commentary.draft_reviews.delete` scope. Stored device-login grants created before this scope was added may require `commentary logout` followed by `commentary login` before they can abandon reviews.
+
+Interaction commands require the matching 'commentary.interactions.create',
+'.read', '.update', or '.cancel' scope. Stored device-login grants created before
+these scopes were added may require 'commentary logout' followed by 'commentary
+login'.
 
 ## Live Comment Waiting
 
