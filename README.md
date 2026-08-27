@@ -1,6 +1,6 @@
 # Commentary CLI
 
-`@commentary-dev/cli` creates and manages Commentary Draft Review Sessions from local Markdown, MDX, HTML, and plain text files. It is a thin terminal companion for the hosted Commentary review UI.
+`@commentary-dev/cli` is the thin terminal companion for Commentary's human decision layer. It preserves established Draft and Brainstorming Review workflows and also maps durable Interaction, read-only Decision receipt, and agent-reported Fulfillment commands to the hosted HTTP v1 API.
 
 The executable name is `commentary`.
 
