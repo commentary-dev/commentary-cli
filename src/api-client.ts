@@ -1,4 +1,5 @@
 import { CliError, ExitCode } from "./errors.js";
+import { AGENT_OPERATIONS, type AgentOperation, type AgentRequest } from "./agent-api.js";
 import { SseParser } from "./sse.js";
 import type {
   BrainstormingConsensusDecision,
@@ -19,6 +20,7 @@ import type {
   Interaction,
   InteractionAgentDecisionReceipt,
   InteractionContent,
+  InteractionRevisionRequest,
   InteractionDecisionPolling,
   InteractionFulfillmentEvidence,
   InteractionFulfillmentReportResult,
@@ -33,11 +35,13 @@ export type FetchLike = typeof fetch;
 type ApiClientOptions = {
   baseUrl: string;
   token?: string | null | undefined;
+  workspaceId?: string | undefined;
   fetchImpl?: FetchLike | undefined;
   onAuthRefresh?: (() => Promise<string | null>) | undefined;
 };
 
 type OAuthMetadata = {
+  scopes_supported?: string[];
   issuer: string;
   token_endpoint: string;
   device_authorization_endpoint: string;
@@ -55,14 +59,46 @@ export type InteractionResponse<T> = {
 export class CommentaryApiClient {
   readonly baseUrl: string;
   private token: string | null;
+  private readonly workspaceId: string | undefined;
   private readonly fetchImpl: FetchLike;
   private readonly onAuthRefresh: (() => Promise<string | null>) | undefined;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token ?? null;
+    this.workspaceId = options.workspaceId;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.onAuthRefresh = options.onAuthRefresh;
+  }
+
+  async agentOperation<T = Record<string, unknown>>(
+    operation: AgentOperation,
+    input: AgentRequest = {},
+  ) {
+    const [method, template] = AGENT_OPERATIONS[operation];
+    const route = template.replace(/:([A-Za-z]+)/gu, (_match, key: string) => {
+      const value = input.params?.[key] ?? (key === "workspaceId" ? this.workspaceId : undefined);
+      if (!value)
+        throw new CliError(
+          `Missing ${key}; pass the corresponding argument or --workspace.`,
+          ExitCode.Usage,
+        );
+      return encodeURIComponent(value);
+    });
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(input.query ?? {})) {
+      if (value !== undefined)
+        query.set(key, Array.isArray(value) ? value.join(",") : String(value));
+    }
+    return this.interactionRequest<T>(`/api/v1${route}${query.size ? `?${query}` : ""}`, {
+      method,
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      headers: {
+        ...(input.etag ? { "If-Match": input.etag } : {}),
+        ...(input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : {}),
+        ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+      },
+    });
   }
 
   async getOAuthMetadata() {
@@ -156,6 +192,7 @@ export class CommentaryApiClient {
     }>("/api/v1/draft-reviews", {
       method: "POST",
       body: {
+        ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
         title: input.title,
         description: input.description,
         ...(input.mode ? { mode: input.mode } : {}),
@@ -409,6 +446,8 @@ export class CommentaryApiClient {
     resource: InteractionResource;
     content: InteractionContent;
     initialState?: "draft" | "active" | undefined;
+    interactionType?: "request" | "notification" | "decision_request" | undefined;
+    priority?: "low" | "normal" | "high" | "urgent" | undefined;
     idempotencyKey: string;
     correlationId?: string | undefined;
   }) {
@@ -418,6 +457,8 @@ export class CommentaryApiClient {
         resource: input.resource,
         content: input.content,
         ...(input.initialState ? { initialState: input.initialState } : {}),
+        ...(input.interactionType ? { interactionType: input.interactionType } : {}),
+        ...(input.priority ? { priority: input.priority } : {}),
       },
       headers: {
         "Idempotency-Key": input.idempotencyKey,
@@ -461,7 +502,7 @@ export class CommentaryApiClient {
 
   async reviseInteraction(input: {
     interactionId: string;
-    content: InteractionContent;
+    content: InteractionRevisionRequest;
     etag: string;
     idempotencyKey: string;
     correlationId?: string | undefined;
@@ -504,6 +545,7 @@ export class CommentaryApiClient {
     decisionId?: string | undefined;
     afterDecisionId?: string | undefined;
     waitMs?: number | undefined;
+    approval?: boolean | undefined;
     correlationId?: string | undefined;
     signal?: AbortSignal | undefined;
   }) {
@@ -511,6 +553,7 @@ export class CommentaryApiClient {
     if (input.decisionId) params.set("decisionId", input.decisionId);
     if (input.afterDecisionId) params.set("after", input.afterDecisionId);
     if (input.waitMs !== undefined) params.set("waitMs", String(input.waitMs));
+    if (input.approval) params.set("approval", "true");
     const suffix = params.size ? `?${params}` : "";
     return this.interactionRequest<{
       data: InteractionAgentDecisionReceipt | null;
@@ -688,6 +731,7 @@ export class CommentaryApiClient {
     const headers: Record<string, string> = {
       accept: init.accept ?? "application/json",
       ...init.headers,
+      ...(init.auth && this.workspaceId ? { "X-Commentary-Workspace-Id": this.workspaceId } : {}),
     };
     let body: string | undefined;
     if (init.body !== undefined) {

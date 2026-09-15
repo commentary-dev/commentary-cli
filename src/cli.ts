@@ -32,6 +32,7 @@ import {
 } from "./commands.js";
 import { addInteractionCommands } from "./interaction-commands.js";
 import { addDecisionAndFulfillmentCommands } from "./decision-commands.js";
+import { addAgentCommands } from "./agent-commands.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./constants.js";
 import { CliError, ExitCode, toErrorMessage } from "./errors.js";
 
@@ -166,7 +167,7 @@ export function buildProgram(runtime: CommandRuntime) {
   program.configureOutput({
     writeOut: (chunk) => runtime.stdout.write(chunk),
     writeErr: (chunk) => runtime.stderr.write(chunk),
-    outputError: (chunk, write) => write(chunk),
+    outputError: () => {},
   });
   program
     .name("commentary")
@@ -174,7 +175,7 @@ export function buildProgram(runtime: CommandRuntime) {
       "Create and manage Commentary draft review sessions from local Markdown, MDX, HTML, and text files.",
     )
     .version(PACKAGE_VERSION)
-    .showHelpAfterError()
+    .showHelpAfterError(false)
     .exitOverride();
 
   program
@@ -187,6 +188,11 @@ export function buildProgram(runtime: CommandRuntime) {
       "Commentary API token. Defaults to COMMENTARY_TOKEN or the stored login token.",
     )
     .option("--json", "Print machine-readable JSON output for agent automation.")
+    .option(
+      "--profile <name>",
+      "Select a named stored credential; never falls back to the default login.",
+    )
+    .option("--workspace <id>", "Select a workspace within the credential's authority.")
     .option("--verbose", "Print verbose diagnostics, including live-event reconnect notices.")
     .option("--quiet", "Suppress non-essential human-readable output.")
     .option("--no-color", "Disable color output")
@@ -197,10 +203,12 @@ export function buildProgram(runtime: CommandRuntime) {
 
   addInteractionCommands(program, runtime);
   addDecisionAndFulfillmentCommands(program, runtime);
+  addAgentCommands(program, runtime);
 
   program
     .command("login")
     .description("Authenticate with Commentary.")
+    .option("--scope <scope>", "Repeat scopes to replace default permissions.", collectOption)
     .option(
       "--token <token>",
       "Store an existing API token instead of starting browser/device login.",
@@ -1008,13 +1016,24 @@ export async function runCli(argv = process.argv.slice(2), options?: RunOptions)
       return ExitCode.Ok;
     }
     if (commanderError.code?.startsWith("commander.")) {
-      runtime.stderr.write(`${commanderError.message ?? "Invalid command."}\n`);
+      if (
+        argv.includes("--json") &&
+        ["interaction", "decision", "fulfillment", "inbox", "workspace", "webhook"].some(
+          (command) => argv.includes(command),
+        )
+      ) {
+        runtime.stderr.write(
+          `${JSON.stringify({ ok: false, error: { code: "usage_error", message: commanderError.message ?? "Invalid command.", exitCode: commanderError.exitCode ?? ExitCode.Usage } })}\n`,
+        );
+      } else runtime.stderr.write(`${commanderError.message ?? "Invalid command."}\n`);
       return commanderError.exitCode ?? ExitCode.Usage;
     }
     if (error instanceof CliError) {
       if (
         argv.includes("--json") &&
-        ["interaction", "decision", "fulfillment"].some((command) => argv.includes(command))
+        ["interaction", "decision", "fulfillment", "inbox", "workspace", "webhook"].some(
+          (command) => argv.includes(command),
+        )
       ) {
         runtime.stderr.write(
           `${JSON.stringify({

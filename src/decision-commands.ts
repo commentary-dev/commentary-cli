@@ -263,12 +263,17 @@ export function addDecisionAndFulfillmentCommands(program: Command, runtime: Com
     .description("Poll until a Decision receipt is available or the timeout expires.")
     .argument("<interaction-id>")
     .option("--after <decision-id>", "Wait for a receipt after this opaque Decision id.")
+    .option(
+      "--approval",
+      "Wait for an approving receipt whose exact current approval policy is satisfied.",
+    )
     .option("--timeout <seconds>", "Bounded timeout from 1 to 3600 seconds.", "300")
     .option("--poll-interval <ms>", "Polling interval from 250 to 60000 milliseconds.", "1000")
     .option("--correlation-id <id>", "Opaque correlation id returned by the server.")
     .action(async function (this: Command, interactionId: string) {
       const commandOptions = options(this) as CommonOptions & {
         after?: string;
+        approval?: boolean;
         timeout: string;
         pollInterval: string;
       };
@@ -283,6 +288,8 @@ export function addDecisionAndFulfillmentCommands(program: Command, runtime: Com
       const client = await makeClient(runtime, commandOptions);
       const abortController = new AbortController();
       const interrupt = () => abortController.abort();
+      if (runtime.signal?.aborted) interrupt();
+      const timeoutTimer = setTimeout(() => abortController.abort(), timeoutMs);
       process.once("SIGINT", interrupt);
       runtime.signal?.addEventListener("abort", interrupt, { once: true });
       try {
@@ -294,10 +301,34 @@ export function addDecisionAndFulfillmentCommands(program: Command, runtime: Com
             interactionId,
             afterDecisionId: commandOptions.after,
             waitMs: 0,
+            approval: commandOptions.approval,
             correlationId: commandOptions.correlationId,
             signal: abortController.signal,
           });
-          if (response.body.data) {
+          const approval = response.body.polling.approval ?? response.body.data?.aggregate;
+          if (
+            commandOptions.approval &&
+            approval &&
+            ["rejected", "expired", "unsatisfiable"].includes(approval.state)
+          ) {
+            throw new CliError(
+              `Approval is ${approval.state}. Request a new revision before proceeding.`,
+              ExitCode.TerminalNegative,
+              { code: "approval_negative" },
+            );
+          }
+          if (commandOptions.approval && response.body.data && !approval) {
+            throw new CliError(
+              "The server did not return current-policy approval status.",
+              ExitCode.Api,
+              { code: "approval_status_missing" },
+            );
+          }
+          if (
+            response.body.data &&
+            (!commandOptions.approval ||
+              (approval?.state === "approved" && response.body.data.outcome === "approve"))
+          ) {
             const found = {
               ...response,
               body: { ...response.body, data: response.body.data },
@@ -316,7 +347,19 @@ export function addDecisionAndFulfillmentCommands(program: Command, runtime: Com
           }
           await delay(Math.min(intervalMs, remaining), abortController.signal);
         }
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          if (Date.now() >= deadline)
+            throw new CliError(
+              `Decision wait timed out after ${commandOptions.timeout} seconds.`,
+              ExitCode.Timeout,
+              { code: "decision_wait_timeout" },
+            );
+          throw new CliError("Decision wait was interrupted.", ExitCode.Interrupted);
+        }
+        throw error;
       } finally {
+        clearTimeout(timeoutTimer);
         process.removeListener("SIGINT", interrupt);
         runtime.signal?.removeEventListener("abort", interrupt);
       }

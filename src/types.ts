@@ -21,14 +21,45 @@ export type InteractionResourceType =
   | "knowledge_brain"
   | "web_app_review";
 export type InteractionResource = { type: InteractionResourceType; id: string };
-export type InteractionContent = JsonObject & { title: string };
+export type InteractionContent = JsonObject & {
+  title: string;
+  subtitle?: string | null;
+  summary?: string | null;
+  body?: string | null;
+  blocks?: JsonObject[];
+  actions?: JsonObject[];
+  links?: { label: string; resource: InteractionResource; id?: string }[];
+  images?: {
+    url: string;
+    contentType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+    width: number;
+    height: number;
+    alt: string;
+  }[];
+};
+export type InteractionRevisionRequest =
+  | InteractionContent
+  | {
+      content: InteractionContent;
+      priorRevisionId?: string;
+      addressedFeedbackIds?: string[];
+    };
+export type InteractionRevision = JsonObject & {
+  id: string;
+  revisionNumber: number;
+  content: InteractionContent | null;
+  proposalFingerprint: string;
+  priorRevisionId?: string | null;
+  addressedFeedbackIds?: string[];
+  revisionDiff?: JsonObject | null;
+};
 export type Interaction = JsonObject & {
   id: string;
   state: InteractionState;
   version: number;
   resource: InteractionResource;
   currentRevisionId: string;
-  revisions?: JsonObject[];
+  revisions?: InteractionRevision[];
   createdAt?: string;
   updatedAt?: string;
 };
@@ -37,6 +68,8 @@ export type InteractionListPage = {
   nextCursor: string | null;
 };
 export type InteractionDecisionOutcome =
+  | "abstain"
+  | "conflict"
   | "approve"
   | "reject"
   | "acknowledge"
@@ -46,6 +79,13 @@ export type InteractionDecisionOutcome =
   | "request_revision"
   | "snooze";
 export type InteractionAgentDecisionReceipt = {
+  aggregate?: {
+    state: "pending" | "approved" | "rejected" | "expired" | "unsatisfiable";
+    approvals: number;
+    required: number;
+    completedSteps: number;
+    totalSteps: number;
+  } | null;
   id: string;
   interactionId: string;
   revisionId: string;
@@ -60,6 +100,7 @@ export type InteractionAgentDecisionReceipt = {
   contentPurgedAt: string | null;
 };
 export type InteractionDecisionPolling = {
+  approval?: NonNullable<InteractionAgentDecisionReceipt["aggregate"]>;
   complete: boolean;
   timedOut?: boolean;
   retryAfterMs: number | null;

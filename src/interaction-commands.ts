@@ -209,13 +209,25 @@ export function addInteractionCommands(program: Command, runtime: CommandRuntime
         .description("Create an Interaction for an authorized Resource.")
         .requiredOption("--resource-type <type>", "Resource type.")
         .requiredOption("--resource-id <id>", "Opaque Resource id.")
-        .addOption(new Option("--initial-state <state>").choices(["draft", "active"])),
+        .addOption(new Option("--initial-state <state>").choices(["draft", "active"]))
+        .addOption(
+          new Option("--interaction-type <type>").choices([
+            "request",
+            "notification",
+            "decision_request",
+          ]),
+        )
+        .addOption(
+          new Option("--priority <priority>").choices(["low", "normal", "high", "urgent"]),
+        ),
     ),
   ).action(async function (this: Command) {
     const commandOptions = options(this) as CommonInteractionOptions & {
       resourceType: InteractionResourceType;
       resourceId: string;
       initialState?: "draft" | "active";
+      interactionType?: "request" | "notification" | "decision_request";
+      priority?: "low" | "normal" | "high" | "urgent";
       idempotencyKey: string;
       file?: string;
       stdin?: boolean;
@@ -229,6 +241,8 @@ export function addInteractionCommands(program: Command, runtime: CommandRuntime
       resource: { type: commandOptions.resourceType, id: commandOptions.resourceId },
       content,
       initialState: commandOptions.initialState,
+      interactionType: commandOptions.interactionType,
+      priority: commandOptions.priority,
       idempotencyKey: commandOptions.idempotencyKey,
       correlationId: commandOptions.correlationId,
     });

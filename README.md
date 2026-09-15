@@ -27,6 +27,10 @@ commentary review ./docs/spec.md
 - Pulls latest reviewed content back to disk with overwrite safeguards.
 - Opens the review URL in the browser when available.
 - Creates, reads, lists, revises, cancels, and waits for durable Interactions through HTTP v1.
+- Reads delegated Inbox items, saved views, policies, insights, and notification receipts.
+- Discovers workspace resources and team queues; links resources and renames authorized reviews.
+- Sends agent messages, acknowledges guidance, and reads fulfillment history.
+- Manages scoped webhook subscriptions and delivery replay.
 
 It does not create GitHub branches, commits, pull requests, provider comments, or GitHub tokens.
 
@@ -308,6 +312,123 @@ App-side draft review limits are enforced before upload:
 - 512 KiB per file
 - 2 MiB total per revision
 
+## Agent Inbox And Workspaces
+
+Inbox and workspace commands use the hosted HTTP v1 API. The credential fixes the
+workspace authority; `--workspace` must match that grant and never changes the
+browser's selected workspace. A different workspace requires a credential granted
+for that workspace. Existing credentials need the relevant additional scopes:
+
+| Capability                                                                  | Scope                                                     |
+| --------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Inbox items, saved views, policies, simulation, insights, delivery receipts | `commentary.inbox.read`                                   |
+| Workspace context, resource collections, team queue                         | `commentary.workspaces.read`                              |
+| Link resources and rename owned draft or Web App reviews                    | `commentary.workspaces.resources.write`                   |
+| Pending view and policy proposals                                           | `commentary.interactions.create`                          |
+| Webhook diagnostics or mutations                                            | `commentary.webhooks.read` or `commentary.webhooks.write` |
+
+Current workspace membership, source access, owner permissions, and feature
+availability still apply. Discovery reads preserve recipient state. Insights
+contain content-free metrics and suppress cohorts below 20 observations.
+Notification history omits titles and app paths. View and policy proposals stay
+inactive until an eligible human accepts them.
+
+Combining `commentary.workspaces.read` with `commentary.interactions.read` permits
+source-authorized workspace conversation reads beyond the token owner's received
+Interactions. Decision receipts, guidance, and fulfillment retain creator authority.
+
+Store separate credentials with the existing login command and `--profile <name>`.
+Use that same global option on subsequent commands. A missing named profile never
+falls back to the default login. An explicit `--token` or `COMMENTARY_TOKEN` takes
+precedence. Tokens remain in OS configuration storage. Repeatable `login --scope`
+values replace the default requested scopes and must be advertised by the server.
+Default login now also requests `commentary.interactions.fulfillment`.
+
+```bash
+commentary --profile team --json workspace list
+commentary --profile team --workspace ws_123 --json workspace get
+commentary --profile team --workspace ws_123 --json workspace resources list --section reviews --filter state=active
+commentary --profile team --workspace ws_123 --json workspace resources get draft_review draft_123
+commentary --profile team --workspace ws_123 --json workspace queue list --assignment unassigned
+commentary --profile team --workspace ws_123 --json inbox list --mode active --sort recommended
+commentary --profile team --json inbox get ws_123 inb_123
+commentary --profile team --json inbox view list
+commentary --profile team --json inbox policy list --scope workspace
+commentary --profile team --json inbox policy get iap_123
+commentary --profile team --json inbox insights --window 30
+commentary --profile team --json inbox notifications list --limit 20
+```
+
+Lists return one page and retain opaque continuations. Pass `--cursor` unchanged
+on the next request with the same workspace and filters. Resource collections use
+25-item pages; Inbox and conversation lists allow up to 100; notification history
+allows up to 20. Collections support the browser's section-specific filters and
+sorts. `--filter key=value` is repeatable.
+
+Mutations read JSON using exactly one of `--file` or `--stdin`. No content payload
+needs to appear in command arguments. Requests are bounded to 256 KiB, with 16 KiB
+limits for view proposals and webhook creation. The API applies narrower field
+limits where required.
+
+```bash
+commentary --workspace ws_123 --json workspace resources link --file link.json --idempotency-key link-42
+commentary --workspace ws_123 --json workspace resources rename draft_review draft_123 --file rename.json
+commentary --json inbox view propose --file view.json
+commentary --json inbox policy propose --file policy.json --idempotency-key policy-42
+commentary --json inbox policy simulate --file simulation.json
+```
+
+Resource link JSON is `{ "type": "draft_review", "id": "draft_123" }`. Rename
+JSON contains `title` and the exact `expectedUpdatedAt` from the resource read.
+Policy proposal JSON contains `name`, `precedence`, `definition`, and optional
+`scope` (`personal` or `workspace`). Definitions use the API's typed
+`schemaVersion: 1`, `condition`, and `effects` contract. Simulation JSON contains
+`definition` and `entryId`; Commentary obtains authorized metadata for that item
+and applies no effects. View proposals use `name` and their existing typed
+`definition` contract.
+
+These scopes expose agent work only. Human Decisions, feedback authoring, guidance
+authoring, policy activation, notification consent, member management, and
+credential administration remain outside these command groups. Dedicated Form,
+Research, Brain, and preview authoring workflows are not introduced here.
+
+## Agent Conversations And Webhooks
+
+```bash
+commentary --json interaction update ixn_123 --state waiting_for_agent --etag '"ixn_123:v2"' --idempotency-key state-42
+commentary --json interaction messages list ixn_123
+commentary --json interaction messages send ixn_123 --file message.json --etag '"ixn_123:v2"' --idempotency-key message-42
+commentary --json interaction guidance list ixn_123
+commentary --json interaction guidance acknowledge ixn_123 ixg_123 --idempotency-key guidance-42
+commentary --json fulfillment get ixn_123
+commentary --json webhook list
+commentary --json webhook get whs_123
+commentary --json webhook create --file webhook.json --idempotency-key webhook-42 --secret-file ../private/signing-secret
+commentary --json webhook update whs_123 --file webhook-update.json --etag '"whs_123:v2"'
+commentary --json webhook disable whs_123 --etag '"whs_123:v2"'
+commentary --json webhook rotate-secret whs_123 --etag '"whs_123:v2"' --secret-file ../private/rotated-secret
+commentary --json webhook deliveries list whs_123 --status failed
+commentary --json webhook deliveries replay whs_123 whd_123 --yes
+```
+
+Message JSON contains `body` and optional `revisionId`. Lifecycle updates accept
+only `active`, `waiting_for_human`, `waiting_for_agent`, `expired`, and `failed`;
+they do not record human Decisions. Guidance retrieval and acknowledgment are
+limited to the creating agent. An acknowledgment records delivery rather than
+learning or application. Fulfillment remains self-reported history.
+
+Webhook creation JSON contains `endpointUrl` and `eventTypes`. Creation and secret
+rotation require a new `--secret-file` outside the project, whose parent directory
+already exists. The CLI creates it exclusively, requests owner-only file permissions
+where the operating system supports them, and excludes the secret from output. A creation
+replay cannot return the secret again. Subscription changes use the exact ETag;
+delivery replay requires `--yes` and can resend an external notification.
+
+New agent command JSON preserves the API body and adds `ok`, `etag`,
+`correlationId`, and `idempotencyReplayed`. Existing Interaction, Decision,
+Fulfillment-report, Draft, and Brainstorming output shapes remain stable. Errors
+in these agent groups are JSON on stderr with a meaningful exit code.
+
 ## Interaction Lifecycle
 
 Interaction commands are thin mappings to '/api/v1/interactions'. The server remains
@@ -397,6 +518,23 @@ server correlation and retry fields when supplied. Tokens and payload content ar
 never logged.
 
 ## Decision Receipts and Fulfillment
+
+`decision wait --approval` waits for an approving receipt whose exact current
+revision, action, fingerprint, expiry, and current approval policy are satisfied.
+An individual approval in an unfinished team chain keeps waiting. Rejected,
+expired, or unsatisfiable approval exits with code 10. Pending waits retain the
+normal bounded timeout and interruption behavior. Approval counts omit human
+identities. Ordinary receipt reads and waits retain their established behavior.
+
+```bash
+commentary decision wait ixn_123 --approval --timeout 300 --json
+```
+
+Interaction creation additionally accepts `--type request|notification|decision_request`
+and `--priority low|normal|high|urgent`, subject to agent controls. Revision JSON may
+contain plain content or an envelope with `content`, `priorRevisionId`, and
+`addressedFeedbackIds`. Rich blocks, images, action policies, provenance, feedback
+references, and revision differences remain in the server response.
 
 `decision get` and `decision wait` are HTTP-only, privacy-safe reads from
 `GET /api/v1/interactions/{interactionId}/decisions`. Opaque handles are passed
