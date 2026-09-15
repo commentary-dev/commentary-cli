@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_BASE_URL } from "./constants.js";
+import { CliError, ExitCode } from "./errors.js";
 
 export type StoredToken = {
   accessToken: string;
@@ -11,6 +12,7 @@ export type StoredToken = {
 
 type StoredConfig = {
   tokens?: Record<string, StoredToken>;
+  profiles?: Record<string, Record<string, StoredToken>>;
 };
 
 function configDir() {
@@ -54,21 +56,45 @@ export function normalizeBaseUrl(baseUrl: string | undefined | null) {
   return url.toString().replace(/\/$/, "");
 }
 
-export async function getStoredToken(baseUrl: string) {
+export function validateProfile(profile: string | undefined) {
+  if (profile !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(profile))
+    throw new CliError(
+      "--profile must be a name of 1 to 80 letters, digits, underscores, or hyphens.",
+      ExitCode.Usage,
+    );
+}
+
+export async function getStoredToken(baseUrl: string, profile?: string) {
+  validateProfile(profile);
   const config = await readConfig();
+  if (profile) {
+    const profiles = config.profiles?.[normalizeBaseUrl(baseUrl)];
+    return profiles && Object.hasOwn(profiles, profile) ? (profiles[profile] ?? null) : null;
+  }
   return config.tokens?.[normalizeBaseUrl(baseUrl)] ?? null;
 }
 
-export async function setStoredToken(baseUrl: string, token: StoredToken) {
+export async function setStoredToken(baseUrl: string, token: StoredToken, profile?: string) {
+  validateProfile(profile);
   const config = await readConfig();
-  config.tokens ??= {};
-  config.tokens[normalizeBaseUrl(baseUrl)] = token;
+  if (profile) {
+    config.profiles ??= {};
+    config.profiles[normalizeBaseUrl(baseUrl)] ??= {};
+    config.profiles[normalizeBaseUrl(baseUrl)]![profile] = token;
+  } else {
+    config.tokens ??= {};
+    config.tokens[normalizeBaseUrl(baseUrl)] = token;
+  }
   await writeConfig(config);
 }
 
-export async function removeStoredToken(baseUrl: string) {
+export async function removeStoredToken(baseUrl: string, profile?: string) {
+  validateProfile(profile);
   const config = await readConfig();
-  if (config.tokens) {
+  if (profile) {
+    const profiles = config.profiles?.[normalizeBaseUrl(baseUrl)];
+    if (profiles) delete profiles[profile];
+  } else if (config.tokens) {
     delete config.tokens[normalizeBaseUrl(baseUrl)];
   }
   await writeConfig(config);

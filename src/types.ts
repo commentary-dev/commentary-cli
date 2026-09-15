@@ -1,6 +1,143 @@
 export type DraftContentType = "markdown" | "html" | "plain_text";
 export type RequestedContentType = DraftContentType | "auto";
 export type JsonObject = Record<string, unknown>;
+export type InteractionState =
+  | "draft"
+  | "active"
+  | "waiting_for_human"
+  | "waiting_for_agent"
+  | "completed"
+  | "rejected"
+  | "canceled"
+  | "expired"
+  | "failed";
+export type InteractionResourceType =
+  | "repository"
+  | "pull_request"
+  | "document"
+  | "draft_review"
+  | "form"
+  | "research_study"
+  | "knowledge_brain"
+  | "web_app_review";
+export type InteractionResource = { type: InteractionResourceType; id: string };
+export type InteractionContent = JsonObject & {
+  title: string;
+  subtitle?: string | null;
+  summary?: string | null;
+  body?: string | null;
+  blocks?: JsonObject[];
+  actions?: JsonObject[];
+  links?: { label: string; resource: InteractionResource; id?: string }[];
+  images?: {
+    url: string;
+    contentType: "image/png" | "image/jpeg" | "image/webp" | "image/avif";
+    width: number;
+    height: number;
+    alt: string;
+  }[];
+};
+export type InteractionRevisionRequest =
+  | InteractionContent
+  | {
+      content: InteractionContent;
+      priorRevisionId?: string;
+      addressedFeedbackIds?: string[];
+    };
+export type InteractionRevision = JsonObject & {
+  id: string;
+  revisionNumber: number;
+  content: InteractionContent | null;
+  proposalFingerprint: string;
+  priorRevisionId?: string | null;
+  addressedFeedbackIds?: string[];
+  revisionDiff?: JsonObject | null;
+};
+export type Interaction = JsonObject & {
+  id: string;
+  state: InteractionState;
+  version: number;
+  resource: InteractionResource;
+  currentRevisionId: string;
+  revisions?: InteractionRevision[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+export type InteractionListPage = {
+  data: Interaction[];
+  nextCursor: string | null;
+};
+export type InteractionDecisionOutcome =
+  | "abstain"
+  | "conflict"
+  | "approve"
+  | "reject"
+  | "acknowledge"
+  | "choose"
+  | "answer"
+  | "comment"
+  | "request_revision"
+  | "snooze";
+export type InteractionAgentDecisionReceipt = {
+  aggregate?: {
+    state: "pending" | "approved" | "rejected" | "expired" | "unsatisfiable";
+    approvals: number;
+    required: number;
+    completedSteps: number;
+    totalSteps: number;
+  } | null;
+  id: string;
+  interactionId: string;
+  revisionId: string;
+  actionId: string;
+  proposalFingerprint: string;
+  semanticAction: string;
+  outcome: InteractionDecisionOutcome;
+  decidedAt: string;
+  expiresAt: string | null;
+  terminalState: string;
+  purged: boolean;
+  contentPurgedAt: string | null;
+};
+export type InteractionDecisionPolling = {
+  approval?: NonNullable<InteractionAgentDecisionReceipt["aggregate"]>;
+  complete: boolean;
+  timedOut?: boolean;
+  retryAfterMs: number | null;
+};
+export type InteractionFulfillmentStatus =
+  | "received"
+  | "started"
+  | "completed"
+  | "failed"
+  | "unknown";
+export type InteractionFulfillmentEvidence = JsonObject;
+export type InteractionFulfillmentReport = JsonObject & {
+  id: string;
+  interactionId: string;
+  decisionId: string;
+  revisionId: string;
+  actionId: string;
+  proposalFingerprint: string;
+  status: InteractionFulfillmentStatus;
+  reportingAgent: { type: "agent"; id: string };
+  evidence: InteractionFulfillmentEvidence | null;
+  reportedAt: string;
+  contentPurgeAfter: string | null;
+  contentPurgedAt: string | null;
+  selfReported: true;
+  verified: false;
+};
+export type InteractionFulfillment = {
+  current: InteractionFulfillmentReport | null;
+  history: InteractionFulfillmentReport[];
+};
+export type InteractionFulfillmentReportResult = {
+  outcome: "recorded" | "replayed";
+  report: InteractionFulfillmentReport;
+  current: InteractionFulfillmentReport;
+  interaction: Interaction;
+};
 export type DraftReviewMode = "draft" | "brainstorming";
 export type BrainstormingFeedbackSignal =
   | "agree"

@@ -1,4 +1,5 @@
 import { CliError, ExitCode } from "./errors.js";
+import { AGENT_OPERATIONS, type AgentOperation, type AgentRequest } from "./agent-api.js";
 import { SseParser } from "./sse.js";
 import type {
   BrainstormingConsensusDecision,
@@ -16,6 +17,17 @@ import type {
   DraftReviewShareLink,
   DraftReviewSession,
   DraftThread,
+  Interaction,
+  InteractionAgentDecisionReceipt,
+  InteractionContent,
+  InteractionRevisionRequest,
+  InteractionDecisionPolling,
+  InteractionFulfillmentEvidence,
+  InteractionFulfillmentReportResult,
+  InteractionFulfillmentStatus,
+  InteractionListPage,
+  InteractionResource,
+  InteractionState,
 } from "./types.js";
 
 export type FetchLike = typeof fetch;
@@ -23,11 +35,13 @@ export type FetchLike = typeof fetch;
 type ApiClientOptions = {
   baseUrl: string;
   token?: string | null | undefined;
+  workspaceId?: string | undefined;
   fetchImpl?: FetchLike | undefined;
   onAuthRefresh?: (() => Promise<string | null>) | undefined;
 };
 
 type OAuthMetadata = {
+  scopes_supported?: string[];
   issuer: string;
   token_endpoint: string;
   device_authorization_endpoint: string;
@@ -35,17 +49,56 @@ type OAuthMetadata = {
   registration_endpoint?: string;
 };
 
+export type InteractionResponse<T> = {
+  body: T;
+  etag: string | null;
+  correlationId: string | null;
+  idempotencyReplayed: boolean;
+};
+
 export class CommentaryApiClient {
   readonly baseUrl: string;
   private token: string | null;
+  private readonly workspaceId: string | undefined;
   private readonly fetchImpl: FetchLike;
   private readonly onAuthRefresh: (() => Promise<string | null>) | undefined;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token ?? null;
+    this.workspaceId = options.workspaceId;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.onAuthRefresh = options.onAuthRefresh;
+  }
+
+  async agentOperation<T = Record<string, unknown>>(
+    operation: AgentOperation,
+    input: AgentRequest = {},
+  ) {
+    const [method, template] = AGENT_OPERATIONS[operation];
+    const route = template.replace(/:([A-Za-z]+)/gu, (_match, key: string) => {
+      const value = input.params?.[key] ?? (key === "workspaceId" ? this.workspaceId : undefined);
+      if (!value)
+        throw new CliError(
+          `Missing ${key}; pass the corresponding argument or --workspace.`,
+          ExitCode.Usage,
+        );
+      return encodeURIComponent(value);
+    });
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(input.query ?? {})) {
+      if (value !== undefined)
+        query.set(key, Array.isArray(value) ? value.join(",") : String(value));
+    }
+    return this.interactionRequest<T>(`/api/v1${route}${query.size ? `?${query}` : ""}`, {
+      method,
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      headers: {
+        ...(input.etag ? { "If-Match": input.etag } : {}),
+        ...(input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : {}),
+        ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+      },
+    });
   }
 
   async getOAuthMetadata() {
@@ -139,6 +192,7 @@ export class CommentaryApiClient {
     }>("/api/v1/draft-reviews", {
       method: "POST",
       body: {
+        ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
         title: input.title,
         description: input.description,
         ...(input.mode ? { mode: input.mode } : {}),
@@ -388,6 +442,159 @@ export class CommentaryApiClient {
     );
   }
 
+  async createInteraction(input: {
+    resource: InteractionResource;
+    content: InteractionContent;
+    initialState?: "draft" | "active" | undefined;
+    interactionType?: "request" | "notification" | "decision_request" | undefined;
+    priority?: "low" | "normal" | "high" | "urgent" | undefined;
+    idempotencyKey: string;
+    correlationId?: string | undefined;
+  }) {
+    return this.interactionRequest<{ data: Interaction }>("/api/v1/interactions", {
+      method: "POST",
+      body: {
+        resource: input.resource,
+        content: input.content,
+        ...(input.initialState ? { initialState: input.initialState } : {}),
+        ...(input.interactionType ? { interactionType: input.interactionType } : {}),
+        ...(input.priority ? { priority: input.priority } : {}),
+      },
+      headers: {
+        "Idempotency-Key": input.idempotencyKey,
+        ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+      },
+    });
+  }
+
+  async getInteraction(input: {
+    interactionId: string;
+    correlationId?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }) {
+    return this.interactionRequest<{ data: Interaction }>(
+      `/api/v1/interactions/${encodeURIComponent(input.interactionId)}`,
+      {
+        ...(input.correlationId ? { headers: { "X-Correlation-Id": input.correlationId } } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+    );
+  }
+
+  async listInteractions(input: {
+    limit?: number | undefined;
+    cursor?: string | undefined;
+    state?: InteractionState | undefined;
+    resourceType?: string | undefined;
+    correlationId?: string | undefined;
+  }) {
+    const params = new URLSearchParams();
+    if (input.limit !== undefined) params.set("limit", String(input.limit));
+    if (input.cursor) params.set("cursor", input.cursor);
+    if (input.state) params.set("state", input.state);
+    if (input.resourceType) params.set("resourceType", input.resourceType);
+    const suffix = params.size ? `?${params}` : "";
+    return this.interactionRequest<InteractionListPage>(
+      `/api/v1/interactions${suffix}`,
+      input.correlationId ? { headers: { "X-Correlation-Id": input.correlationId } } : {},
+    );
+  }
+
+  async reviseInteraction(input: {
+    interactionId: string;
+    content: InteractionRevisionRequest;
+    etag: string;
+    idempotencyKey: string;
+    correlationId?: string | undefined;
+  }) {
+    return this.interactionRequest<{ data: Interaction }>(
+      `/api/v1/interactions/${encodeURIComponent(input.interactionId)}/revisions`,
+      {
+        method: "POST",
+        body: input.content,
+        headers: {
+          "If-Match": input.etag,
+          "Idempotency-Key": input.idempotencyKey,
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      },
+    );
+  }
+
+  async cancelInteraction(input: {
+    interactionId: string;
+    etag: string;
+    idempotencyKey: string;
+    correlationId?: string | undefined;
+  }) {
+    return this.interactionRequest<{ data: Interaction }>(
+      `/api/v1/interactions/${encodeURIComponent(input.interactionId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          "If-Match": input.etag,
+          "Idempotency-Key": input.idempotencyKey,
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      },
+    );
+  }
+
+  async getInteractionDecision(input: {
+    interactionId: string;
+    decisionId?: string | undefined;
+    afterDecisionId?: string | undefined;
+    waitMs?: number | undefined;
+    approval?: boolean | undefined;
+    correlationId?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }) {
+    const params = new URLSearchParams();
+    if (input.decisionId) params.set("decisionId", input.decisionId);
+    if (input.afterDecisionId) params.set("after", input.afterDecisionId);
+    if (input.waitMs !== undefined) params.set("waitMs", String(input.waitMs));
+    if (input.approval) params.set("approval", "true");
+    const suffix = params.size ? `?${params}` : "";
+    return this.interactionRequest<{
+      data: InteractionAgentDecisionReceipt | null;
+      polling: InteractionDecisionPolling;
+    }>(`/api/v1/interactions/${encodeURIComponent(input.interactionId)}/decisions${suffix}`, {
+      ...(input.correlationId ? { headers: { "X-Correlation-Id": input.correlationId } } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  }
+
+  async reportInteractionFulfillment(input: {
+    interactionId: string;
+    decisionId: string;
+    revisionId: string;
+    actionId: string;
+    proposalFingerprint: string;
+    status: InteractionFulfillmentStatus;
+    evidence?: InteractionFulfillmentEvidence | undefined;
+    idempotencyKey: string;
+    correlationId?: string | undefined;
+  }) {
+    return this.interactionRequest<{ data: InteractionFulfillmentReportResult }>(
+      `/api/v1/interactions/${encodeURIComponent(input.interactionId)}/fulfillment`,
+      {
+        method: "POST",
+        body: {
+          decisionId: input.decisionId,
+          revisionId: input.revisionId,
+          actionId: input.actionId,
+          proposalFingerprint: input.proposalFingerprint,
+          status: input.status,
+          ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+        },
+        headers: {
+          "Idempotency-Key": input.idempotencyKey,
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      },
+    );
+  }
+
   async *streamDraftReviewEvents(input: {
     sessionId: string;
     cursor?: string | undefined;
@@ -457,6 +664,29 @@ export class CommentaryApiClient {
     return this.rawJson<T>(pathOrUrl, { ...init, auth: true });
   }
 
+  private async interactionRequest<T>(
+    pathOrUrl: string,
+    init: {
+      method?: string;
+      body?: unknown;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<InteractionResponse<T>> {
+    const response = await this.doFetch(pathOrUrl, { ...init, auth: true });
+    const contentType = response.headers.get("content-type") ?? "";
+    const payload = contentType.includes("application/json")
+      ? ((await response.json()) as unknown)
+      : null;
+    if (!response.ok) this.throwPayloadError(response.status, payload);
+    return {
+      body: payload as T,
+      etag: response.headers.get("etag"),
+      correlationId: response.headers.get("x-correlation-id"),
+      idempotencyReplayed: response.headers.get("idempotency-replayed") === "true",
+    };
+  }
+
   private async rawText(
     pathOrUrl: string,
     init: { auth: boolean; method?: string; body?: unknown },
@@ -491,6 +721,7 @@ export class CommentaryApiClient {
       body?: unknown;
       accept?: string;
       signal?: AbortSignal | undefined;
+      headers?: Record<string, string> | undefined;
     },
   ) {
     const url =
@@ -499,6 +730,8 @@ export class CommentaryApiClient {
         : `${this.baseUrl}${pathOrUrl}`;
     const headers: Record<string, string> = {
       accept: init.accept ?? "application/json",
+      ...init.headers,
+      ...(init.auth && this.workspaceId ? { "X-Commentary-Workspace-Id": this.workspaceId } : {}),
     };
     let body: string | undefined;
     if (init.body !== undefined) {
@@ -564,14 +797,48 @@ export class CommentaryApiClient {
   private throwPayloadError(status: number, payload: unknown): never {
     const body =
       payload && typeof payload === "object"
-        ? (payload as { error?: unknown; error_description?: unknown })
+        ? (payload as {
+            error?: unknown;
+            error_description?: unknown;
+          })
         : {};
+    const structured =
+      body.error && typeof body.error === "object"
+        ? (body.error as {
+            code?: unknown;
+            message?: unknown;
+            correlationId?: unknown;
+            retryable?: unknown;
+          })
+        : null;
     const message =
-      typeof body.error === "string"
-        ? body.error
-        : typeof body.error_description === "string"
-          ? body.error_description
-          : `Commentary API returned ${status}.`;
-    throw new CliError(message, status === 401 || status === 403 ? ExitCode.Auth : ExitCode.Api);
+      typeof structured?.message === "string"
+        ? structured.message
+        : typeof body.error === "string"
+          ? body.error
+          : typeof body.error_description === "string"
+            ? body.error_description
+            : `Commentary API returned ${status}.`;
+    const code = typeof structured?.code === "string" ? structured.code : undefined;
+    const exitCode = structured
+      ? status === 401 || status === 403
+        ? ExitCode.Auth
+        : status === 412 || status === 428
+          ? ExitCode.StaleRevision
+          : status === 400 || status === 404 || status === 409 || status === 422
+            ? ExitCode.Validation
+            : status >= 500
+              ? ExitCode.Server
+              : ExitCode.Api
+      : status === 401 || status === 403
+        ? ExitCode.Auth
+        : ExitCode.Api;
+    throw new CliError(message, exitCode, {
+      ...(code ? { code } : {}),
+      ...(typeof structured?.correlationId === "string"
+        ? { correlationId: structured.correlationId }
+        : {}),
+      ...(typeof structured?.retryable === "boolean" ? { retryable: structured.retryable } : {}),
+    });
   }
 }

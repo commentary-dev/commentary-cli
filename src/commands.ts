@@ -18,6 +18,7 @@ import {
   removeStoredToken,
   setStoredToken,
   shouldRefreshStoredToken,
+  validateProfile,
   type StoredToken,
 } from "./config.js";
 import { normalizeReviewPath } from "./content.js";
@@ -77,11 +78,15 @@ export type CommandRuntime = {
   cwd: string;
   stdout: Writer;
   stderr: Writer;
+  stdin?: NodeJS.ReadableStream | undefined;
+  signal?: AbortSignal | undefined;
   fetchImpl?: typeof fetch | undefined;
   isTty?: boolean | undefined;
 };
 
 export type GlobalOptions = {
+  profile?: string | undefined;
+  workspace?: string | undefined;
   baseUrl?: string | undefined;
   token?: string | undefined;
   json?: boolean | undefined;
@@ -95,25 +100,42 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function makeClient(runtime: CommandRuntime, options: GlobalOptions) {
+export async function makeClient(runtime: CommandRuntime, options: GlobalOptions) {
+  validateProfile(options.profile);
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const explicitToken = options.token?.trim() || process.env.COMMENTARY_TOKEN?.trim();
   if (explicitToken) {
-    return new CommentaryApiClient({ baseUrl, token: explicitToken, fetchImpl: runtime.fetchImpl });
+    return new CommentaryApiClient({
+      baseUrl,
+      token: explicitToken,
+      fetchImpl: runtime.fetchImpl,
+      workspaceId: options.workspace,
+    });
   }
 
-  const stored = await getStoredToken(baseUrl);
+  const stored = await getStoredToken(baseUrl, options.profile);
   if (!stored) {
-    return new CommentaryApiClient({ baseUrl, token: null, fetchImpl: runtime.fetchImpl });
+    if (options.profile)
+      throw new CliError(
+        `No stored credential for profile ${options.profile}. Run commentary login --profile ${options.profile}.`,
+        ExitCode.Auth,
+      );
+    return new CommentaryApiClient({
+      baseUrl,
+      token: null,
+      fetchImpl: runtime.fetchImpl,
+      workspaceId: options.workspace,
+    });
   }
 
-  const refreshStored = () => refreshStoredLogin(runtime, baseUrl);
+  const refreshStored = () => refreshStoredLogin(runtime, baseUrl, options.profile);
   const token = shouldRefreshStoredToken(stored) ? await refreshStored() : stored.accessToken;
   return new CommentaryApiClient({
     baseUrl,
     token,
     fetchImpl: runtime.fetchImpl,
     onAuthRefresh: refreshStored,
+    workspaceId: options.workspace,
   });
 }
 
@@ -125,8 +147,8 @@ function isInvalidRefreshError(error: unknown) {
   );
 }
 
-async function refreshStoredLogin(runtime: CommandRuntime, baseUrl: string) {
-  const stored = await getStoredToken(baseUrl);
+async function refreshStoredLogin(runtime: CommandRuntime, baseUrl: string, profile?: string) {
+  const stored = await getStoredToken(baseUrl, profile);
   if (!stored?.refreshToken) {
     return null;
   }
@@ -138,11 +160,11 @@ async function refreshStoredLogin(runtime: CommandRuntime, baseUrl: string) {
       refreshToken: token.refresh_token,
       expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
     };
-    await setStoredToken(baseUrl, refreshed);
+    await setStoredToken(baseUrl, refreshed, profile);
     return refreshed.accessToken;
   } catch (error) {
     if (isInvalidRefreshError(error)) {
-      await removeStoredToken(baseUrl);
+      await removeStoredToken(baseUrl, profile);
       throw new CliError("Stored Commentary login expired. Run commentary login.", ExitCode.Auth);
     }
     throw error;
@@ -573,11 +595,16 @@ async function waitForBrainstormingReviewEvent(input: {
 
 export async function loginCommand(
   runtime: CommandRuntime,
-  options: GlobalOptions & { token?: string | undefined; noOpen?: boolean | undefined },
+  options: GlobalOptions & {
+    token?: string | undefined;
+    noOpen?: boolean | undefined;
+    scope?: string[] | undefined;
+  },
 ) {
+  validateProfile(options.profile);
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   if (options.token?.trim()) {
-    await setStoredToken(baseUrl, { accessToken: options.token.trim() });
+    await setStoredToken(baseUrl, { accessToken: options.token.trim() }, options.profile);
     if (options.json) {
       writeJson(runtime.stdout, { ok: true, baseUrl });
     } else {
@@ -588,10 +615,19 @@ export async function loginCommand(
 
   const client = new CommentaryApiClient({ baseUrl, fetchImpl: runtime.fetchImpl });
   const resource = `${baseUrl}/api`;
+  const scopes = options.scope?.length ? [...new Set(options.scope)] : [...REQUIRED_SCOPES];
+  if (options.scope?.length) {
+    const metadata = await client.getOAuthMetadata();
+    if (!scopes.every((scope) => metadata.scopes_supported?.includes(scope)))
+      throw new CliError(
+        "One or more --scope values are not supported by this server.",
+        ExitCode.Usage,
+      );
+  }
   const device = await client.requestDeviceCode({
     clientId: CLIENT_ID,
     clientName: CLIENT_NAME,
-    scope: REQUIRED_SCOPES.join(" "),
+    scope: scopes.join(" "),
     resource,
   });
   if (options.json) {
@@ -624,11 +660,15 @@ export async function loginCommand(
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
     try {
       const token = await client.exchangeDeviceCode({ deviceCode: device.device_code, resource });
-      await setStoredToken(baseUrl, {
-        accessToken: token.access_token,
-        refreshToken: token.refresh_token,
-        expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
-      });
+      await setStoredToken(
+        baseUrl,
+        {
+          accessToken: token.access_token,
+          refreshToken: token.refresh_token,
+          expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
+        },
+        options.profile,
+      );
       if (!options.json) {
         writeText(runtime.stdout, `Logged in to ${baseUrl}.`);
       }
@@ -645,7 +685,7 @@ export async function loginCommand(
 
 export async function logoutCommand(runtime: CommandRuntime, options: GlobalOptions) {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
-  await removeStoredToken(baseUrl);
+  await removeStoredToken(baseUrl, options.profile);
   if (options.json) {
     writeJson(runtime.stdout, { ok: true, baseUrl });
   } else {

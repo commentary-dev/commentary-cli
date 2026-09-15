@@ -16,6 +16,11 @@ export const REQUIRED_SCOPES = [
   "commentary.comments.write",
   "commentary.comments.status",
   "commentary.draft_reviews.delete",
+  "commentary.interactions.create",
+  "commentary.interactions.read",
+  "commentary.interactions.update",
+  "commentary.interactions.cancel",
+  "commentary.interactions.fulfillment",
 ] as const;
 
 export const SUPPORTED_EXTENSIONS = [".md", ".markdown", ".mdx", ".html", ".htm", ".txt"] as const;
