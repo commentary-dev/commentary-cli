@@ -76,7 +76,7 @@ if (lastResult && /\bnpm error code E404\b/.test(npmOutput(lastResult))) {
   console.error(
     [
       `npm returned E404 while publishing ${pkg.name}@${pkg.version}.`,
-      "Verify that NPM_TOKEN can publish to this package scope and that the npm organization/package still exists.",
+      "Verify package publishing access. For trusted publishing, check the GitHub repository, workflow filename, allowed npm publish action, and npm CLI version. For token publishing, check NPM_TOKEN package permissions.",
     ].join(" "),
   );
 }
