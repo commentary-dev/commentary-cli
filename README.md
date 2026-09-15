@@ -780,6 +780,24 @@ COMMENTARY_LIVE_TOKEN=<token> npm run test:live
 
 The live suite creates a review, waits for reviewer comments, syncs agent revisions, and verifies a two-turn comment/revision loop. The release workflow requires production live validation on `main`, then publishes to npm with provenance when the package version has not already been published.
 
+The release workflow uses npm trusted publishing through GitHub Actions OIDC,
+with Node 24, npm 11, and `id-token: write`. Configure a GitHub Actions trusted
+publisher in the npm package settings for `@commentary-dev/cli`:
+
+| Setting              | Value                                       |
+| -------------------- | ------------------------------------------- |
+| Organization or user | `commentary-dev`                            |
+| Repository           | `commentary-cli`                            |
+| Workflow filename    | `release.yml`                               |
+| Environment name     | Leave blank                                 |
+| Allowed actions      | Enable direct publishing with `npm publish` |
+
+The workflow filename is entered without its directory. The release job has no
+GitHub environment. `NPM_TOKEN` is not used by this workflow; retain
+`COMMENTARY_LIVE_TOKEN` for the production smoke test. After confirming a
+successful trusted publication, remove the unused npm publishing secret and
+revoke its old token. See the [npm trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
+
 ## Security Model
 
 Commentary stores review sessions and comments. The CLI syncs local text files to Commentary and can download reviewed files back to disk. Users and local agents remain responsible for local edits, commits, branches, and pushes.
