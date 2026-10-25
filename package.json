@@ -1,6 +1,6 @@
 {
   "name": "@commentary-dev/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Command-line companion for Commentary draft review sessions.",
   "license": "MIT",
   "type": "module",
@@ -27,13 +27,16 @@
     "test:integration": "vitest run test/api-client.test.ts test/commands.test.ts",
     "test:live": "tsx scripts/live-smoke.ts",
     "pack:smoke": "npm pack --dry-run",
-    "verify": "npm run public:check && npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build && npm run pack:smoke"
+    "verify": "npm run public:check && npm run contracts:check && npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build && npm run pack:smoke",
+    "contracts:check": "node scripts/check-projects-contract.mjs"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
     "chokidar": "^4.0.3",
     "commander": "^14.0.2",
     "fast-glob": "^3.3.3",
-    "open": "^10.2.0"
+    "open": "^10.2.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

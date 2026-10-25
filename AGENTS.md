@@ -2,12 +2,12 @@
 
 ## Repo Intent
 
-This repository builds `@commentary-dev/cli`, the command-line companion for Commentary Draft Review Sessions. The CLI creates, syncs, watches, reads comments from, waits for live comments, replies to, resolves, pulls, and opens draft reviews for local Markdown, HTML, MDX, and plain text files.
+This repository builds `@commentary-dev/cli`, the HTTP command-line companion for Commentary. It supports local Draft Reviews, Projects, Trackers, review packages and guides, retained source snapshots, evidence, Interactions, and review collaboration. Keep local collection, watching, and metadata in the CLI; current authorization and domain rules belong to the hosted API.
 
 ## Product Boundaries
 
 - Keep the CLI thin. Commentary business logic belongs in the hosted Commentary API.
-- Use the HTTP v1 draft-review API as the v1 transport. Do not introduce MCP as a second transport unless a user explicitly asks for it.
+- Use the HTTP v1 API as the transport. Do not introduce MCP as a second transport unless a user explicitly asks for it.
 - Do not add GitHub branch creation, commits, pull requests, provider review submission, or GitHub token management.
 - Do not store secrets in project metadata. `.commentary/session.json` may contain session ids, URLs, tracked file paths, file ids, hashes, and timestamps only.
 - Token storage must stay outside the repo through OS config storage or a keychain integration when one is deliberately added.
@@ -29,6 +29,7 @@ This repository builds `@commentary-dev/cli`, the command-line companion for Com
 - Use Node 22 or newer.
 - Install dependencies with `npm ci` after lockfile creation, or `npm install` while bootstrapping.
 - Run `npm run verify` before handoff.
+- Keep `contracts/projects-agent-v1.json` and `src/projects-contract.json` synchronized with the canonical versioned contract. Run `npm run contracts:check -- --source <canonical-contract.json>` when updating API parity.
 - Run `npm run public:check` before opening a PR and after adding generated files, docs, or workflows.
 - Run `npm run test:live` only with `COMMENTARY_LIVE_TOKEN` set and only when live Commentary production validation is intended.
 

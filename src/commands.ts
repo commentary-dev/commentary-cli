@@ -32,7 +32,6 @@ import {
 } from "./git-base.js";
 import { contentHash } from "./hash.js";
 import {
-  formatBrainstormingConsensusState,
   formatCommentsMarkdown,
   formatCommentsText,
   formatDraftRebased,
@@ -58,11 +57,7 @@ import {
 } from "./session.js";
 import type { CollectedFile } from "./files.js";
 import type {
-  BrainstormingConsensusRule,
-  BrainstormingConsensusRuleMode,
-  BrainstormingConsensusState,
-  BrainstormingFeedbackSignal,
-  BrainstormingConsensusDecision,
+  ReviewConsensusState,
   DraftReviewLiveEvent,
   DraftReviewGitBaseMetadata,
   DraftReviewMode,
@@ -280,55 +275,8 @@ function resolveAgentAlias(alias?: string | undefined) {
   return value || undefined;
 }
 
-function resolveClientName(clientName?: string | undefined) {
-  const value = clientName?.trim();
-  return value || undefined;
-}
-
 function normalizeMode(mode?: DraftReviewMode | undefined) {
   return mode ?? "draft";
-}
-
-function nonEmptyUnique(values: string[] | undefined) {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
-}
-
-function parseIntegerOption(value: string | undefined, name: string) {
-  if (value === undefined) {
-    return undefined;
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new CliError(`${name} must be a non-negative integer.`, ExitCode.Usage);
-  }
-  return parsed;
-}
-
-function isBrainstormingEventMatch(input: {
-  event: DraftReviewLiveEvent;
-  filePath?: string | undefined;
-}) {
-  const relevant = new Set([
-    "comment.created",
-    "reply.created",
-    "comment.resolved",
-    "comment.reopened",
-    "thread.status_changed",
-    "feedback_signal.changed",
-    "feedback.marked_addressed",
-    "draft.converted_to_brainstorming",
-    "brainstorming.metadata_changed",
-    "brainstorming.status_changed",
-  ]);
-  if (!relevant.has(input.event.type)) {
-    return false;
-  }
-  if (!input.filePath) {
-    return true;
-  }
-  return (
-    (input.event.thread?.filePath ?? payloadString(input.event, "filePath")) === input.filePath
-  );
 }
 
 async function resolveDraftSession(input: {
@@ -521,78 +469,6 @@ async function waitForDraftReviewCommentEvent(input: {
   );
 }
 
-async function waitForBrainstormingReviewEvent(input: {
-  client: CommentaryApiClient;
-  sessionId: string;
-  filePath?: string | undefined;
-  timeoutMs: number;
-  abortController?: AbortController | undefined;
-  verbose?: boolean | undefined;
-  stderr: Writer;
-}) {
-  const abortController = input.abortController ?? new AbortController();
-  let timedOut = false;
-  let cursor: string | undefined = "latest";
-  let reconnectDelayMs = 1000;
-  const timeout =
-    input.timeoutMs > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          abortController.abort();
-        }, input.timeoutMs)
-      : null;
-
-  try {
-    while (!abortController.signal.aborted) {
-      try {
-        for await (const event of input.client.streamDraftReviewEvents({
-          sessionId: input.sessionId,
-          cursor,
-          signal: abortController.signal,
-        })) {
-          cursor = event.id;
-          reconnectDelayMs = 1000;
-          if (event.type === "draft.deleted") {
-            throw new CliError(
-              "Draft review was deleted before a matching event arrived.",
-              ExitCode.Api,
-            );
-          }
-          if (!isBrainstormingEventMatch({ event, filePath: input.filePath })) {
-            continue;
-          }
-          abortController.abort();
-          return event;
-        }
-      } catch (error) {
-        if (abortController.signal.aborted) {
-          break;
-        }
-        if (error instanceof CliError && error.exitCode !== ExitCode.Network) {
-          throw error;
-        }
-        if (input.verbose) {
-          input.stderr.write(`Event stream disconnected; reconnecting in ${reconnectDelayMs}ms.\n`);
-        }
-      }
-
-      await delay(reconnectDelayMs, abortController.signal);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10_000);
-    }
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
-
-  throw new CliError(
-    timedOut
-      ? "Timed out waiting for a Brainstorming Review event."
-      : "Stopped waiting for a Brainstorming Review event.",
-    timedOut ? ExitCode.Timeout : ExitCode.General,
-  );
-}
-
 export async function loginCommand(
   runtime: CommandRuntime,
   options: GlobalOptions & {
@@ -769,7 +645,8 @@ export async function reviewCommand(
   options: GlobalOptions & {
     title?: string;
     description?: string;
-    mode?: DraftReviewMode;
+    polls?: boolean;
+    consensus?: boolean;
     contentType?: RequestedContentType;
     watch?: boolean;
     noOpen?: boolean;
@@ -813,7 +690,14 @@ export async function reviewCommand(
   const result = await client.createDraftReview({
     title,
     description: options.description ?? null,
-    mode: options.mode,
+    ...(options.polls || options.consensus
+      ? {
+          collaboration: {
+            polls: options.polls ?? false,
+            consensus: { enabled: options.consensus ?? false },
+          },
+        }
+      : {}),
     gitBase,
     files,
   });
@@ -982,19 +866,16 @@ export async function syncCommand(
     message?: string;
     all?: boolean;
     dryRun?: boolean;
-    addressedThread?: string[];
   },
 ) {
   const loaded = await loadSession(runtime, options);
   const root = sessionRoot(loaded.filePath, loaded.metadata);
   const current = await readTrackedFiles(root, loaded.metadata.trackedFiles);
   const changed = changedFiles(current, loaded.metadata.trackedFiles);
-  const addressedThreadIds = nonEmptyUnique(options.addressedThread);
   if (options.dryRun) {
     const payload = {
       ok: true,
       changedFiles: changed.map((file) => file.path),
-      addressedThreadIds,
       fileCount: current.length,
     };
     if (options.json) {
@@ -1007,7 +888,7 @@ export async function syncCommand(
     }
     return;
   }
-  if (!options.all && changed.length === 0 && addressedThreadIds.length === 0) {
+  if (!options.all && changed.length === 0) {
     const revision = {
       id: "",
       revisionNumber: loaded.metadata.lastKnownRevision ?? 0,
@@ -1033,7 +914,6 @@ export async function syncCommand(
     sessionId: loaded.metadata.reviewSessionId,
     summary: options.message ?? null,
     files: current,
-    addressedThreadIds: addressedThreadIds.length ? addressedThreadIds : undefined,
   });
   const nextMetadata: SessionMetadata = {
     ...loaded.metadata,
@@ -1048,7 +928,6 @@ export async function syncCommand(
       ok: true,
       revision: result.revision,
       noOp: Boolean(result.noOp),
-      addressedThreadIds: result.addressedThreadIds ?? addressedThreadIds,
       session: publicSessionJson(nextMetadata),
     });
   } else {
@@ -1212,7 +1091,7 @@ export async function commentsCommand(
     resolved?: boolean;
     all?: boolean;
     file?: string;
-    consensusState?: BrainstormingConsensusState;
+    consensusState?: ReviewConsensusState;
     session?: string;
     watch?: boolean;
     jsonl?: boolean;
@@ -1700,270 +1579,6 @@ export async function resolveCommand(
   }
 }
 
-export async function brainstormEnableCommand(
-  runtime: CommandRuntime,
-  options: GlobalOptions & { session?: string },
-) {
-  const { sessionId, client } = await resolveDraftSession({ runtime, options });
-  const result = await client.updateDraftReview({ sessionId, mode: "brainstorming" });
-  if (options.json) {
-    writeJson(runtime.stdout, { ok: true, draftReview: result.draftReview });
-  } else {
-    writeText(runtime.stdout, `Enabled Brainstorming Review mode for ${sessionId}.`);
-  }
-}
-
-export async function brainstormStatusCommand(
-  runtime: CommandRuntime,
-  options: GlobalOptions & { session?: string },
-) {
-  const { sessionId, client } = await resolveDraftSession({ runtime, options });
-  const state = await client.getConsensusState(sessionId);
-  if (options.json) {
-    writeJson(runtime.stdout, { sessionId, ...state });
-  } else {
-    writeText(runtime.stdout, formatBrainstormingConsensusState({ sessionId, state }));
-  }
-}
-
-export async function brainstormSignalCommand(
-  runtime: CommandRuntime,
-  threadId: string,
-  signal: BrainstormingFeedbackSignal,
-  options: GlobalOptions & {
-    session?: string;
-    clear?: boolean;
-    alias?: string;
-    clientName?: string;
-  },
-) {
-  const { sessionId, client } = await resolveDraftSession({ runtime, options });
-  const result = await client.updateCommentFeedback({
-    sessionId,
-    threadId,
-    signal,
-    active: !options.clear,
-    agentAlias: resolveAgentAlias(options.alias),
-    clientName: resolveClientName(options.clientName),
-  });
-  if (options.json) {
-    writeJson(runtime.stdout, { ...result, sessionId, threadId, signal, active: !options.clear });
-  } else {
-    writeText(
-      runtime.stdout,
-      `${options.clear ? "Cleared" : "Set"} ${signal} feedback for ${threadId}.`,
-    );
-  }
-}
-
-export async function brainstormDecideCommand(
-  runtime: CommandRuntime,
-  threadId: string,
-  decision: BrainstormingConsensusDecision,
-  options: GlobalOptions & { session?: string; reason?: string },
-) {
-  const { sessionId, client } = await resolveDraftSession({ runtime, options });
-  const result = await client.updateCommentConsensusDecision({
-    sessionId,
-    threadId,
-    decision,
-    reason: options.reason ?? null,
-  });
-  if (options.json) {
-    writeJson(runtime.stdout, { ...result, sessionId, threadId, decision });
-  } else {
-    writeText(runtime.stdout, `Updated consensus decision for ${threadId}: ${decision}.`);
-  }
-}
-
-function buildConsensusRulePatch(options: {
-  enabled?: boolean;
-  consensusMode?: BrainstormingConsensusRuleMode;
-  agreementThreshold?: string;
-  minResponseCount?: string;
-  requiredReviewer?: string[];
-  requiredReviewerCondition?: BrainstormingConsensusRule["requiredReviewerCondition"];
-  objectionPolicy?: BrainstormingConsensusRule["objectionPolicy"];
-  blockersBlock?: boolean;
-  ownerOverrideAllowed?: boolean;
-  countOwnerAgreement?: boolean;
-  countAgentSignals?: boolean;
-  autoApplyAcceptedThreads?: boolean;
-  staleOnNewActivity?: boolean;
-  decisionPollCompletion?: BrainstormingConsensusRule["decisionPollCompletion"];
-}) {
-  const rule: BrainstormingConsensusRule = {};
-  if (options.enabled !== undefined) {
-    rule.enabled = options.enabled;
-  }
-  if (options.consensusMode) {
-    rule.mode = options.consensusMode;
-  }
-  const agreementThreshold = parseIntegerOption(
-    options.agreementThreshold,
-    "--agreement-threshold",
-  );
-  if (agreementThreshold !== undefined) {
-    rule.agreementThreshold = agreementThreshold;
-  }
-  const minResponseCount = parseIntegerOption(options.minResponseCount, "--min-response-count");
-  if (minResponseCount !== undefined) {
-    rule.minResponseCount = minResponseCount;
-  }
-  if (options.requiredReviewer) {
-    rule.requiredReviewerIds = nonEmptyUnique(options.requiredReviewer);
-  }
-  if (options.requiredReviewerCondition) {
-    rule.requiredReviewerCondition = options.requiredReviewerCondition;
-  }
-  if (options.objectionPolicy) {
-    rule.objectionPolicy = options.objectionPolicy;
-  }
-  if (options.blockersBlock !== undefined) {
-    rule.blockersBlock = options.blockersBlock;
-  }
-  if (options.ownerOverrideAllowed !== undefined) {
-    rule.ownerOverrideAllowed = options.ownerOverrideAllowed;
-  }
-  if (options.countOwnerAgreement !== undefined) {
-    rule.countOwnerAgreement = options.countOwnerAgreement;
-  }
-  if (options.countAgentSignals !== undefined) {
-    rule.countAgentSignals = options.countAgentSignals;
-  }
-  if (options.autoApplyAcceptedThreads !== undefined) {
-    rule.autoApplyAcceptedThreads = options.autoApplyAcceptedThreads;
-  }
-  if (options.staleOnNewActivity !== undefined) {
-    rule.staleOnNewActivity = options.staleOnNewActivity;
-  }
-  if (options.decisionPollCompletion) {
-    rule.decisionPollCompletion = options.decisionPollCompletion;
-  }
-  return rule;
-}
-
-export async function brainstormRuleCommand(
-  runtime: CommandRuntime,
-  options: GlobalOptions & {
-    session?: string;
-    enabled?: boolean;
-    consensusMode?: BrainstormingConsensusRuleMode;
-    agreementThreshold?: string;
-    minResponseCount?: string;
-    requiredReviewer?: string[];
-    requiredReviewerCondition?: BrainstormingConsensusRule["requiredReviewerCondition"];
-    objectionPolicy?: BrainstormingConsensusRule["objectionPolicy"];
-    blockersBlock?: boolean;
-    ownerOverrideAllowed?: boolean;
-    countOwnerAgreement?: boolean;
-    countAgentSignals?: boolean;
-    autoApplyAcceptedThreads?: boolean;
-    staleOnNewActivity?: boolean;
-    decisionPollCompletion?: BrainstormingConsensusRule["decisionPollCompletion"];
-  },
-) {
-  const { sessionId, client } = await resolveDraftSession({ runtime, options });
-  const rulePatch = buildConsensusRulePatch(options);
-  const shouldPatch = Object.keys(rulePatch).length > 0;
-  const result = shouldPatch
-    ? await client.updateConsensusRule({ sessionId, rule: rulePatch })
-    : await client.getConsensusRule(sessionId);
-  if (options.json) {
-    writeJson(runtime.stdout, { sessionId, ...result });
-  } else {
-    writeText(
-      runtime.stdout,
-      [
-        shouldPatch ? "Updated Brainstorming consensus rule" : "Brainstorming consensus rule",
-        "",
-        `Session: ${sessionId}`,
-        JSON.stringify(result.consensusRule, null, 2),
-      ].join("\n"),
-    );
-  }
-}
-
-export async function brainstormNextCommand(
-  runtime: CommandRuntime,
-  options: GlobalOptions & {
-    session?: string;
-    file?: string;
-    consensusState?: BrainstormingConsensusState;
-    timeout?: string;
-    format?: "text" | "markdown" | "json";
-  },
-) {
-  const { sessionId, session, client } = await resolveDraftSession({ runtime, options });
-  const filePath = options.file ? normalizeReviewPath(options.file) : undefined;
-  const consensusState = options.consensusState ?? "accepted_for_change";
-  const timeoutMs = parseDurationMs(options.timeout, 30 * 60 * 1000);
-  const abortController = new AbortController();
-  const waitPromise = waitForBrainstormingReviewEvent({
-    client,
-    sessionId,
-    filePath,
-    timeoutMs,
-    abortController,
-    verbose: options.verbose,
-    stderr: runtime.stderr,
-  });
-  void waitPromise.catch(() => undefined);
-
-  let result;
-  try {
-    result = await client.listComments({ sessionId, filePath, consensusState });
-  } catch (error) {
-    abortController.abort();
-    throw error;
-  }
-
-  const format = options.json ? "json" : (options.format ?? "markdown");
-  if (result.threads.length > 0) {
-    abortController.abort();
-    if (format === "json") {
-      writeJson(runtime.stdout, {
-        ok: true,
-        source: "open",
-        consensusState,
-        threads: result.threads,
-      });
-    } else if (format === "text") {
-      writeText(runtime.stdout, formatCommentsText(result.threads));
-    } else {
-      writeText(runtime.stdout, formatCommentsMarkdown({ session, threads: result.threads }));
-    }
-    return;
-  }
-
-  while (true) {
-    const event = await waitPromise;
-    const next = await client.listComments({ sessionId, filePath, consensusState });
-    if (next.threads.length === 0 && event.thread) {
-      next.threads = [event.thread];
-    }
-    if (format === "json") {
-      writeJson(runtime.stdout, {
-        ok: true,
-        source: "event",
-        consensusState,
-        threads: next.threads,
-        event,
-      });
-    } else if (format === "text") {
-      writeText(
-        runtime.stdout,
-        next.threads.length ? formatCommentsText(next.threads) : formatWaitCommentText(event),
-      );
-    } else if (next.threads.length) {
-      writeText(runtime.stdout, formatCommentsMarkdown({ session, threads: next.threads }));
-    } else {
-      writeText(runtime.stdout, formatWaitCommentMarkdown({ session, event }));
-    }
-    return;
-  }
-}
-
 export async function pullCommand(
   runtime: CommandRuntime,
   options: GlobalOptions & {
@@ -2068,7 +1683,6 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
   let resolvedComments: number | null = null;
   let gitBase: DraftReviewGitBaseMetadata | null = null;
   let mode: DraftReviewMode | null = null;
-  let consensusState: Awaited<ReturnType<CommentaryApiClient["getConsensusState"]>> | null = null;
   try {
     const client = await makeClient(runtime, { ...options, baseUrl: loaded.metadata.baseUrl });
     const [draftResult, openResult, resolvedResult] = await Promise.all([
@@ -2080,9 +1694,6 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
     gitBase = draftResult.draftReview.gitBase ?? null;
     openComments = openResult.threads.length;
     resolvedComments = resolvedResult.threads.length;
-    if (mode === "brainstorming") {
-      consensusState = await client.getConsensusState(loaded.metadata.reviewSessionId);
-    }
   } catch {
     openComments = null;
     resolvedComments = null;
@@ -2093,7 +1704,6 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
     openComments,
     resolvedComments,
     mode,
-    consensusState,
     gitBase,
   };
   if (options.json) {
@@ -2111,13 +1721,6 @@ export async function statusCommand(runtime: CommandRuntime, options: GlobalOpti
         `Changed files: ${changed.length ? changed.join(", ") : "none"}`,
         `Open comments: ${openComments ?? "unknown"}`,
         `Resolved comments: ${resolvedComments ?? "unknown"}`,
-        consensusState
-          ? `Brainstorming accepted: ${consensusState.counts.acceptedForChange ?? 0}`
-          : null,
-        consensusState ? `Brainstorming blocked: ${consensusState.counts.blocked ?? 0}` : null,
-        consensusState
-          ? `Brainstorming agent ready: ${consensusState.agentReady ? "yes" : "no"}`
-          : null,
         `Git base: ${formatGitBase(gitBase)}`,
       ]
         .filter(Boolean)
@@ -2131,7 +1734,7 @@ export async function sessionsCommand(
   options: GlobalOptions & { mode?: DraftReviewMode },
 ) {
   const client = await makeClient(runtime, options);
-  const result = await client.listDraftReviews({ mode: options.mode });
+  const result = await client.listDraftReviews();
   if (options.json) {
     writeJson(runtime.stdout, result);
   } else {

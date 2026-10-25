@@ -148,7 +148,7 @@ describe("INTERACTION-003 CLI lifecycle", () => {
           "--state",
           "active",
           "--resource-type",
-          "draft_review",
+          "project_review_session",
         ],
         { cwd, stdout, stderr, fetchImpl: fetchImpl as typeof fetch },
       ),
@@ -157,7 +157,7 @@ describe("INTERACTION-003 CLI lifecycle", () => {
     expect(JSON.parse(output)).toMatchSnapshot("interaction list JSON");
     expect(urls[0]?.endsWith("/api/v1/interactions/ixn%252Fopaque")).toBe(true);
     expect(urls[1]).toContain(
-      "limit=25&cursor=cursor_start&state=active&resourceType=draft_review",
+      "limit=25&cursor=cursor_start&state=active&resourceType=project_review_session",
     );
   });
 

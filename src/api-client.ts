@@ -1,17 +1,15 @@
 import { CliError, ExitCode } from "./errors.js";
 import { AGENT_OPERATIONS, type AgentOperation, type AgentRequest } from "./agent-api.js";
+import { PROJECT_OPERATIONS } from "./project-payload.js";
 import { SseParser } from "./sse.js";
 import type {
-  BrainstormingConsensusDecision,
-  BrainstormingConsensusRule,
-  BrainstormingConsensusState,
-  BrainstormingConsensusStateResult,
-  BrainstormingFeedbackSignal,
+  ReviewConsensusState,
   DraftReviewAccessGrant,
   DraftFileInput,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
-  DraftReviewMode,
+  ReviewRef,
+  ReviewCollaboration,
   DraftReviewRevision,
   DraftReviewShareAudience,
   DraftReviewShareLink,
@@ -53,7 +51,14 @@ export type InteractionResponse<T> = {
   body: T;
   etag: string | null;
   correlationId: string | null;
-  idempotencyReplayed: boolean;
+  idempotencyReplayed: boolean | null;
+};
+
+export type ProjectBinaryResponse = {
+  bytes: Uint8Array;
+  mime: string;
+  etag: string | null;
+  correlationId: string | null;
 };
 
 export class CommentaryApiClient {
@@ -99,6 +104,144 @@ export class CommentaryApiClient {
         ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
       },
     });
+  }
+
+  async projectOperation(operationId: string, input: AgentRequest = {}) {
+    const operation = PROJECT_OPERATIONS.find((item) => item.operationId === operationId);
+    if (!operation || operation.status !== "implemented")
+      throw new CliError(
+        "Projects capability is unsupported by this client contract.",
+        ExitCode.Validation,
+        { code: "capability_unsupported" },
+      );
+    const route = operation.path.replace(/\{(\w+)\}/gu, (_match, key: string) => {
+      const value = input.params?.[key];
+      if (!value) throw new CliError(`Missing explicit ${key}.`, ExitCode.Usage);
+      return encodeURIComponent(value);
+    });
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(input.query ?? {}))
+      if (value !== undefined) query.set(key, String(value));
+    return this.interactionRequest<Record<string, unknown>>(
+      route + (query.size ? `?${query}` : ""),
+      {
+        method: operation.method,
+        ...(input.signal ? { signal: input.signal } : {}),
+        unknownReplay: true,
+        ...(input.body !== undefined ? { body: input.body } : {}),
+        headers: {
+          "X-Commentary-Contract-Version": "1",
+          ...(input.etag ? { "If-Match": input.etag } : {}),
+          ...(input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : {}),
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      },
+    ).catch((error) => {
+      if (input.signal?.aborted)
+        throw new CliError("Request interrupted; resumable state retained.", ExitCode.Interrupted);
+      if (error instanceof CliError && error.code === undefined && error.message.includes("404"))
+        throw new CliError(
+          "Server does not support this capability; upgrade or select a compatible endpoint.",
+          ExitCode.Validation,
+          { code: "capability_unsupported" },
+        );
+      throw error;
+    });
+  }
+
+  async projectBinaryOperation(
+    operationId: string,
+    input: AgentRequest & { maxBytes?: number } = {},
+  ): Promise<ProjectBinaryResponse> {
+    const operation = PROJECT_OPERATIONS.find((item) => item.operationId === operationId);
+    if (!operation || operation.status !== "implemented" || operation.method !== "GET")
+      throw new CliError(
+        "Projects binary capability is unsupported by this client contract.",
+        ExitCode.Validation,
+        { code: "capability_unsupported" },
+      );
+    const route = operation.path.replace(/\{(\w+)\}/gu, (_match, key: string) => {
+      const value = input.params?.[key];
+      if (!value) throw new CliError(`Missing explicit ${key}.`, ExitCode.Usage);
+      return encodeURIComponent(value);
+    });
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(input.query ?? {}))
+      if (value !== undefined) query.set(key, String(value));
+    const url = route + (query.size ? `?${query}` : "");
+    const maximum = input.maxBytes ?? 16 * 1024 * 1024;
+    try {
+      const response = await this.doFetch(url, {
+        auth: true,
+        method: operation.method,
+        signal: input.signal,
+        headers: {
+          accept: "application/octet-stream",
+          "X-Commentary-Contract-Version": "1",
+          ...(input.correlationId ? { "X-Correlation-Id": input.correlationId } : {}),
+        },
+      });
+      if (!response.ok) await this.throwApiError(response);
+      const declaredSize = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declaredSize) && declaredSize > maximum) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new CliError(`Downloaded file exceeds ${maximum} bytes.`, ExitCode.Validation);
+      }
+      const reader = response.body?.getReader();
+      if (!reader)
+        return {
+          bytes: new Uint8Array(),
+          mime: response.headers.get("content-type") ?? "application/octet-stream",
+          etag: response.headers.get("etag"),
+          correlationId: response.headers.get("x-correlation-id"),
+        };
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      let completed = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            completed = true;
+            break;
+          }
+          size += value.byteLength;
+          if (size > maximum) {
+            await reader.cancel().catch(() => undefined);
+            throw new CliError(`Downloaded file exceeds ${maximum} bytes.`, ExitCode.Validation);
+          }
+          chunks.push(value);
+        }
+      } finally {
+        if (!completed) await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return {
+        bytes,
+        mime: response.headers.get("content-type") ?? "application/octet-stream",
+        etag: response.headers.get("etag"),
+        correlationId: response.headers.get("x-correlation-id"),
+      };
+    } catch (error) {
+      if (input.signal?.aborted)
+        throw new CliError(
+          "Request interrupted; no output file was written.",
+          ExitCode.Interrupted,
+        );
+      if (error instanceof CliError && error.code === undefined && error.message.includes("404"))
+        throw new CliError(
+          "Server does not support this capability; upgrade or select a compatible endpoint.",
+          ExitCode.Validation,
+          { code: "capability_unsupported" },
+        );
+      throw error;
+    }
   }
 
   async getOAuthMetadata() {
@@ -166,11 +309,58 @@ export class CommentaryApiClient {
     });
   }
 
-  async listDraftReviews(input: { mode?: DraftReviewMode | undefined } = {}) {
+  async getReviewSettings(review: ReviewRef) {
+    return this.request<Record<string, unknown>>(
+      `/api/v1/review/settings?review=${encodeURIComponent(JSON.stringify(review))}`,
+    );
+  }
+  async updateReviewSettings(body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>("/api/v1/review/settings", {
+      method: "PATCH",
+      body,
+    });
+  }
+  async getReviewDecision(threadId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/v1/review/threads/${encodeURIComponent(threadId)}/decision`,
+    );
+  }
+  async mutateReviewDecision(threadId: string, body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>(
+      `/api/v1/review/threads/${encodeURIComponent(threadId)}/decision`,
+      { method: "POST", body },
+    );
+  }
+  async getReviewPolls(input: {
+    review?: ReviewRef;
+    action?: "get" | "list" | "markdown";
+    threadId?: string;
+    pollId?: string;
+    outcome?: string;
+    after?: string;
+  }) {
     const params = new URLSearchParams();
-    if (input.mode) {
-      params.set("mode", input.mode);
-    }
+    if (input.review) params.set("review", JSON.stringify(input.review));
+    if (input.action) params.set("action", input.action);
+    if (input.threadId) params.set("threadId", input.threadId);
+    if (input.pollId) params.set("pollId", input.pollId);
+    if (input.outcome) params.set("outcome", input.outcome);
+    if (input.after) params.set("after", input.after);
+    return this.request<Record<string, unknown>>(
+      `/api/v1/review/polls${params.size ? `?${params}` : ""}`,
+    );
+  }
+  async mutateReviewPoll(body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>("/api/v1/review/polls", { method: "POST", body });
+  }
+  async getReviewGate(review: ReviewRef, revision: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/v1/review/gate?review=${encodeURIComponent(JSON.stringify(review))}&revision=${encodeURIComponent(revision)}`,
+    );
+  }
+  async listDraftReviews() {
+    const params = new URLSearchParams();
+
     const suffix = params.size ? `?${params}` : "";
     return this.request<{ ok: true; draftReviews: DraftReviewSession[] }>(
       `/api/v1/draft-reviews${suffix}`,
@@ -180,7 +370,7 @@ export class CommentaryApiClient {
   async createDraftReview(input: {
     title: string;
     description?: string | null;
-    mode?: DraftReviewMode | undefined;
+    collaboration?: ReviewCollaboration;
     files: DraftFileInput[];
     gitBase?: DraftReviewGitBaseMetadata | null | undefined;
   }) {
@@ -195,7 +385,7 @@ export class CommentaryApiClient {
         ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
         title: input.title,
         description: input.description,
-        ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.collaboration ? { collaboration: input.collaboration } : {}),
         sourceType: "cli",
         ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
         files: input.files.map((file) => ({
@@ -212,7 +402,7 @@ export class CommentaryApiClient {
     title?: string | undefined;
     description?: string | null | undefined;
     status?: string | undefined;
-    mode?: DraftReviewMode | undefined;
+    collaboration?: ReviewCollaboration;
     gitBase?: DraftReviewGitBaseMetadata | null | undefined;
   }) {
     return this.request<{ ok: true; draftReview: DraftReviewSession }>(
@@ -223,7 +413,7 @@ export class CommentaryApiClient {
           ...(input.title !== undefined ? { title: input.title } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
-          ...(input.mode !== undefined ? { mode: input.mode } : {}),
+
           ...(input.gitBase !== undefined ? { gitBase: input.gitBase } : {}),
         },
       },
@@ -247,18 +437,15 @@ export class CommentaryApiClient {
     sessionId: string;
     summary?: string | null;
     files: DraftFileInput[];
-    addressedThreadIds?: string[] | undefined;
   }) {
     return this.request<{
       ok: true;
       revision: DraftReviewRevision;
       noOp?: boolean;
-      addressedThreadIds?: string[];
     }>(`/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/revisions`, {
       method: "POST",
       body: {
         summary: input.summary,
-        ...(input.addressedThreadIds ? { addressedThreadIds: input.addressedThreadIds } : {}),
         files: input.files.map((file) => ({
           fileId: file.fileId,
           path: file.path,
@@ -320,7 +507,7 @@ export class CommentaryApiClient {
     status?: "open" | "resolved" | undefined;
     filePath?: string | undefined;
     fileId?: string | undefined;
-    consensusState?: BrainstormingConsensusState | undefined;
+    consensusState?: ReviewConsensusState | undefined;
   }) {
     const params = new URLSearchParams();
     if (input.status) {
@@ -370,68 +557,6 @@ export class CommentaryApiClient {
         method: "POST",
         body: { status: input.status },
       },
-    );
-  }
-
-  async updateCommentFeedback(input: {
-    sessionId: string;
-    threadId: string;
-    signal: BrainstormingFeedbackSignal;
-    active?: boolean | undefined;
-    agentAlias?: string | undefined;
-    clientName?: string | undefined;
-  }) {
-    return this.request<{ ok: true; thread?: DraftThread; threadId?: string; signal?: string }>(
-      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/comments/${encodeURIComponent(input.threadId)}/feedback`,
-      {
-        method: "POST",
-        body: {
-          signal: input.signal,
-          ...(input.active !== undefined ? { active: input.active } : {}),
-          ...(input.agentAlias ? { agentAlias: input.agentAlias } : {}),
-          ...(input.clientName ? { clientName: input.clientName } : {}),
-        },
-      },
-    );
-  }
-
-  async updateCommentConsensusDecision(input: {
-    sessionId: string;
-    threadId: string;
-    decision: BrainstormingConsensusDecision;
-    reason?: string | null | undefined;
-  }) {
-    return this.request<{ ok: true; consensus?: unknown; thread?: DraftThread | null }>(
-      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/comments/${encodeURIComponent(input.threadId)}/consensus-decision`,
-      {
-        method: "POST",
-        body: {
-          decision: input.decision,
-          ...(input.reason !== undefined ? { reason: input.reason } : {}),
-        },
-      },
-    );
-  }
-
-  async getConsensusRule(sessionId: string) {
-    return this.request<{ ok: true; consensusRule: BrainstormingConsensusRule }>(
-      `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/consensus-rule`,
-    );
-  }
-
-  async updateConsensusRule(input: { sessionId: string; rule: BrainstormingConsensusRule }) {
-    return this.request<{ ok: true; consensusRule: BrainstormingConsensusRule }>(
-      `/api/v1/draft-reviews/${encodeURIComponent(input.sessionId)}/consensus-rule`,
-      {
-        method: "PATCH",
-        body: input.rule,
-      },
-    );
-  }
-
-  async getConsensusState(sessionId: string) {
-    return this.request<BrainstormingConsensusStateResult>(
-      `/api/v1/draft-reviews/${encodeURIComponent(sessionId)}/consensus-state`,
     );
   }
 
@@ -671,6 +796,7 @@ export class CommentaryApiClient {
       body?: unknown;
       headers?: Record<string, string>;
       signal?: AbortSignal;
+      unknownReplay?: boolean;
     } = {},
   ): Promise<InteractionResponse<T>> {
     const response = await this.doFetch(pathOrUrl, { ...init, auth: true });
@@ -683,7 +809,10 @@ export class CommentaryApiClient {
       body: payload as T,
       etag: response.headers.get("etag"),
       correlationId: response.headers.get("x-correlation-id"),
-      idempotencyReplayed: response.headers.get("idempotency-replayed") === "true",
+      idempotencyReplayed:
+        init.unknownReplay && !response.headers.has("idempotency-replayed")
+          ? null
+          : response.headers.get("idempotency-replayed") === "true",
     };
   }
 
@@ -809,6 +938,8 @@ export class CommentaryApiClient {
             message?: unknown;
             correlationId?: unknown;
             retryable?: unknown;
+            diagnostics?: unknown;
+            details?: unknown;
           })
         : null;
     const message =
@@ -825,7 +956,11 @@ export class CommentaryApiClient {
         ? ExitCode.Auth
         : status === 412 || status === 428
           ? ExitCode.StaleRevision
-          : status === 400 || status === 404 || status === 409 || status === 422
+          : status === 400 ||
+              status === 404 ||
+              status === 409 ||
+              status === 422 ||
+              (status === 410 && code === "event_cursor_resync_required")
             ? ExitCode.Validation
             : status >= 500
               ? ExitCode.Server
@@ -839,6 +974,8 @@ export class CommentaryApiClient {
         ? { correlationId: structured.correlationId }
         : {}),
       ...(typeof structured?.retryable === "boolean" ? { retryable: structured.retryable } : {}),
+      ...(Array.isArray(structured?.details) ? { diagnostics: structured.details } : {}),
+      ...(Array.isArray(structured?.diagnostics) ? { diagnostics: structured.diagnostics } : {}),
     });
   }
 }
