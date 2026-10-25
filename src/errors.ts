@@ -1,5 +1,7 @@
 export class CliError extends Error {
   readonly exitCode: number;
+  readonly diagnostics: unknown[] | undefined;
+  readonly reconciliation: { recoveryFile: string; currentEtag: string | null } | undefined;
   readonly code: string | undefined;
   readonly correlationId: string | undefined;
   readonly retryable: boolean | undefined;
@@ -7,12 +9,20 @@ export class CliError extends Error {
   constructor(
     message: string,
     exitCode = 1,
-    details: { code?: string; correlationId?: string; retryable?: boolean } = {},
+    details: {
+      code?: string;
+      correlationId?: string;
+      retryable?: boolean;
+      diagnostics?: unknown[];
+      reconciliation?: { recoveryFile: string; currentEtag: string | null };
+    } = {},
   ) {
     super(message);
     this.name = "CliError";
     this.exitCode = exitCode;
     this.code = details.code;
+    this.diagnostics = details.diagnostics;
+    this.reconciliation = details.reconciliation;
     this.correlationId = details.correlationId;
     this.retryable = details.retryable;
   }

@@ -99,6 +99,32 @@ describe("agent HTTP v1 operations", () => {
     },
   );
 
+  it("passes the current Inbox interaction and priority filters", async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const query = new URL(String(url)).searchParams;
+      expect(query.get("interactionType")).toBe("decision_request");
+      expect(query.get("priorityBand")).toBe("urgent");
+      return response({ items: [], nextCursor: null });
+    });
+    expect(
+      await runCli(
+        [
+          ...auth,
+          "--workspace",
+          "ws_1",
+          "inbox",
+          "list",
+          "--interaction-type",
+          "decision_request",
+          "--priority-band",
+          "urgent",
+        ],
+        { cwd, stdout, stderr, fetchImpl: fetchImpl as typeof fetch },
+      ),
+    ).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [
       [

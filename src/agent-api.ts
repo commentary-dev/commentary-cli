@@ -35,6 +35,7 @@ export const AGENT_OPERATIONS = {
 
 export type AgentOperation = keyof typeof AGENT_OPERATIONS;
 export type AgentRequest = {
+  signal?: AbortSignal | undefined;
   params?: Record<string, string | undefined>;
   query?: Record<string, string | number | boolean | string[] | undefined>;
   body?: unknown;

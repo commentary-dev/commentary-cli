@@ -1,5 +1,5 @@
 import type {
-  BrainstormingConsensusStateResult,
+  ReviewConsensusStateResult,
   DraftReviewAccessGrant,
   DraftReviewGitBaseMetadata,
   DraftReviewLiveEvent,
@@ -220,13 +220,13 @@ function formatFeedbackSummary(thread: DraftThread) {
   return parts.length ? `Feedback: ${parts.join(", ")}` : null;
 }
 
-export function formatBrainstormingConsensusState(input: {
+export function formatReviewConsensusState(input: {
   sessionId: string;
-  state: BrainstormingConsensusStateResult;
+  state: ReviewConsensusStateResult;
 }) {
   const counts = input.state.counts;
   return [
-    "Brainstorming review status",
+    "Review consensus status",
     "",
     `Session: ${input.sessionId}`,
     `Agent ready: ${input.state.agentReady ? "yes" : "no"}`,

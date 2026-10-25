@@ -7,6 +7,7 @@ import { writeJson, writeText } from "./output.js";
 import type {
   Interaction,
   InteractionContent,
+  InteractionResourceFilterType,
   InteractionResourceType,
   InteractionState,
 } from "./types.js";
@@ -28,6 +29,14 @@ const RESOURCE_TYPES: InteractionResourceType[] = [
   "research_study",
   "knowledge_brain",
   "web_app_review",
+];
+const RESOURCE_FILTER_TYPES: InteractionResourceFilterType[] = [
+  ...RESOURCE_TYPES,
+  "project",
+  "tracker",
+  "review_package",
+  "project_review_session",
+  "source_snapshot",
 ];
 const STATES: InteractionState[] = [
   "draft",
@@ -116,7 +125,7 @@ function responseJson(
   metadata: {
     etag: string | null;
     correlationId: string | null;
-    idempotencyReplayed: boolean;
+    idempotencyReplayed: boolean | null;
   },
 ) {
   return {
@@ -147,7 +156,7 @@ function writeInteraction(
     body: { data: Interaction };
     etag: string | null;
     correlationId: string | null;
-    idempotencyReplayed: boolean;
+    idempotencyReplayed: boolean | null;
   },
 ) {
   if (commandOptions.json) {
@@ -271,7 +280,9 @@ export function addInteractionCommands(program: Command, runtime: CommandRuntime
     .option("--cursor <cursor>", "Opaque cursor from a previous page.")
     .addOption(new Option("--state <state>", "Filter by lifecycle state.").choices(STATES))
     .addOption(
-      new Option("--resource-type <type>", "Filter by Resource type.").choices(RESOURCE_TYPES),
+      new Option("--resource-type <type>", "Filter by Resource type.").choices(
+        RESOURCE_FILTER_TYPES,
+      ),
     )
     .option("--correlation-id <id>", "Opaque correlation id returned by the server.")
     .action(async function (this: Command) {
@@ -279,7 +290,7 @@ export function addInteractionCommands(program: Command, runtime: CommandRuntime
         limit: string;
         cursor?: string;
         state?: InteractionState;
-        resourceType?: InteractionResourceType;
+        resourceType?: InteractionResourceFilterType;
       };
       const client = await makeClient(runtime, commandOptions);
       const response = await client.listInteractions({

@@ -20,6 +20,13 @@ export type InteractionResourceType =
   | "research_study"
   | "knowledge_brain"
   | "web_app_review";
+export type InteractionResourceFilterType =
+  | InteractionResourceType
+  | "project"
+  | "tracker"
+  | "review_package"
+  | "project_review_session"
+  | "source_snapshot";
 export type InteractionResource = { type: InteractionResourceType; id: string };
 export type InteractionContent = JsonObject & {
   title: string;
@@ -138,14 +145,14 @@ export type InteractionFulfillmentReportResult = {
   current: InteractionFulfillmentReport;
   interaction: Interaction;
 };
-export type DraftReviewMode = "draft" | "brainstorming";
-export type BrainstormingFeedbackSignal =
+export type DraftReviewMode = "draft";
+export type ReviewConsensusFeedbackSignal =
   | "agree"
   | "object"
   | "blocker"
   | "needs_clarification"
   | "addressed";
-export type BrainstormingConsensusState =
+export type ReviewConsensusState =
   | "pending"
   | "accepted_for_change"
   | "blocked"
@@ -154,20 +161,16 @@ export type BrainstormingConsensusState =
   | "out_of_scope"
   | "applied"
   | "resolved";
-export type BrainstormingConsensusDecision =
-  | "accepted_for_change"
-  | "rejected"
-  | "out_of_scope"
-  | "clear";
-export type BrainstormingConsensusRuleMode =
+export type ReviewConsensusDecision = "accepted_for_change" | "rejected" | "out_of_scope" | "clear";
+export type ReviewConsensusRuleMode =
   | "owner_decides"
   | "no_open_blockers"
   | "n_of_m"
   | "required_reviewers";
 
-export type BrainstormingConsensusRule = {
+export type ReviewConsensusRule = {
   enabled?: boolean;
-  mode?: BrainstormingConsensusRuleMode;
+  mode?: ReviewConsensusRuleMode;
   agreementThreshold?: number;
   minResponseCount?: number;
   requiredReviewerIds?: string[];
@@ -188,20 +191,20 @@ export type BrainstormingConsensusRule = {
   updatedByViewerId?: string | null;
 };
 
-export type BrainstormingThreadConsensus = {
-  state?: BrainstormingConsensusState;
+export type ReviewConsensusThreadConsensus = {
+  state?: ReviewConsensusState;
   actionable?: boolean;
   source?: string;
   reason?: string;
   stale?: boolean;
   acceptedByRule?: boolean;
   acceptedByOverride?: boolean;
-  overrideDecision?: Exclude<BrainstormingConsensusDecision, "clear"> | null;
+  overrideDecision?: Exclude<ReviewConsensusDecision, "clear"> | null;
   appliedRevisions?: JsonObject[];
   requiredReviewerStatus?: JsonObject;
 };
 
-export type BrainstormingConsensusCounts = {
+export type ReviewConsensusCounts = {
   pending?: number;
   acceptedForChange?: number;
   blocked?: number;
@@ -212,10 +215,10 @@ export type BrainstormingConsensusCounts = {
   resolved?: number;
 };
 
-export type BrainstormingConsensusStateResult = {
+export type ReviewConsensusStateResult = {
   ok: true;
-  consensusRule: BrainstormingConsensusRule | null;
-  counts: BrainstormingConsensusCounts;
+  consensusRule: ReviewConsensusRule | null;
+  counts: ReviewConsensusCounts;
   filesWithActionableThreads: string[];
   filesWithBlockedThreads: string[];
   agentReady: boolean;
@@ -332,7 +335,7 @@ export type DraftThread = {
   suffixText?: string | null;
   feedbackSignals?: JsonObject[];
   feedbackSummary?: JsonObject | null;
-  consensus?: BrainstormingThreadConsensus | null;
+  consensus?: ReviewConsensusThreadConsensus | null;
   comments: DraftThreadComment[];
   latestRevision?: {
     id: string;
@@ -353,11 +356,8 @@ export type DraftReviewLiveEventType =
   | "draft.status_changed"
   | "revision.created"
   | "draft.rebased"
-  | "draft.converted_to_brainstorming"
   | "feedback_signal.changed"
   | "feedback.marked_addressed"
-  | "brainstorming.metadata_changed"
-  | "brainstorming.status_changed"
   | "draft.deleted";
 
 export type DraftReviewLiveEvent = {
@@ -387,4 +387,27 @@ export type SessionMetadata = {
   createdAt: string;
   lastSyncedAt: string;
   lastKnownRevision: number | null;
+};
+
+export type ReviewRef =
+  | { kind: "draft" | "preview" | "package" | "snapshot" | "guide"; id: string }
+  | {
+      kind: "pr";
+      provider: "github" | "azure_devops";
+      owner: string;
+      repo: string;
+      projectName?: string;
+      prNumber: number;
+    }
+  | {
+      kind: "branch";
+      provider: "github" | "azure_devops";
+      owner: string;
+      repo: string;
+      projectName?: string;
+      branchRef: string;
+    };
+export type ReviewCollaboration = {
+  polls?: boolean;
+  consensus?: { enabled?: boolean; rule?: ReviewConsensusRule; gate?: JsonObject };
 };

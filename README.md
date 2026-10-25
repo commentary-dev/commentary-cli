@@ -31,6 +31,10 @@ commentary review ./docs/spec.md
 - Discovers workspace resources and team queues; links resources and renames authorized reviews.
 - Sends agent messages, acknowledges guidance, and reads fulfillment history.
 - Manages scoped webhook subscriptions and delivery replay.
+- Publishes complete static walkthrough packages with resumable byte transfers.
+- Composes immutable Project Review Sessions and requests exact human Decisions.
+- Publishes and inspects source snapshots with pinned provenance.
+- Attaches caller evidence and requests independent provider verification.
 
 It does not create GitHub branches, commits, pull requests, provider comments, or GitHub tokens.
 
@@ -76,7 +80,7 @@ Create a review:
 
 ```bash
 commentary review ./docs/spec.md --title "Product spec"
-commentary review ./docs/spec.md --title "Product spec" --mode brainstorming
+commentary review ./docs/spec.md --title "Product spec" --consensus
 commentary review ./docs/spec.md --title "Product spec" --git-base auto
 ```
 
@@ -93,7 +97,6 @@ Upload a new revision:
 
 ```bash
 commentary sync --message "Address review comments"
-commentary sync --message "Apply accepted feedback" --addressed-thread thread_123
 ```
 
 Restore a previous review into the current directory and sync changed local files:
@@ -167,12 +170,7 @@ commentary resolve --thread -thread_123 --message "Addressed."
 Brainstorming Reviews:
 
 ```bash
-commentary brainstorm enable
-commentary brainstorm status --json
-commentary brainstorm next --json
-commentary brainstorm signal thread_123 agree --alias "Docs agent"
-commentary brainstorm decide thread_123 accepted_for_change
-commentary brainstorm rule --consensus-mode no_open_blockers --min-response-count 2
+
 ```
 
 Share a review:
@@ -212,12 +210,6 @@ commentary revision
 commentary rebase
 commentary watch
 commentary comments
-commentary brainstorm enable
-commentary brainstorm status
-commentary brainstorm next
-commentary brainstorm signal <thread-id> <signal>
-commentary brainstorm decide <thread-id> <decision>
-commentary brainstorm rule
 commentary next-comment
 commentary wait-comment
 commentary reply <thread-id> <message>
@@ -655,8 +647,6 @@ commentary review ./docs/spec.md --json
 commentary status --json
 commentary comments --json --open
 commentary next-comment --json
-commentary brainstorm status --json
-commentary brainstorm next --json
 commentary abandon --yes --json
 commentary interaction list --json
 commentary interaction wait ixn_123 --timeout 300 --json
@@ -691,23 +681,15 @@ For unattended listeners, use `commentary comments --watch --jsonl`. Stop a runn
 
 `commentary wait-comment` is future-event-only by default. It does not list already-open threads.
 
-## Brainstorming Reviews
+## Review collaboration
 
-Use `commentary review --mode brainstorming <paths...>` to create a Brainstorming Review, or `commentary brainstorm enable` to convert the linked draft review. The local `.commentary/session.json` format is unchanged; mode, feedback, and consensus state stay in Commentary.
+New reviews default Polls and Consensus off. Use `commentary review ./docs --polls --consensus` to enable both at creation. Existing reviews use shared collaboration operations with JSON payloads:
 
-`commentary comments --consensus-state <state>` filters Brainstorming threads by consensus state. `commentary brainstorm next` defaults to `accepted_for_change`, starts the live event stream, lists current matching threads, and waits only if none are ready.
+`commentary collaboration settings --file review.json --json` reads settings for a typed `review` reference. `configure` accepts `review`, `collaboration`, `expectedVersion` and a stable `operationKey`. `decision` reads a thread; `decide` accepts the shared decision mutation, including `record_application` with an exact `resultingRevision`. `polls` and `poll` read and mutate polls. `gate` requires `review` and `revision`.
 
-Feedback signals are:
+Reads require `commentary.review.read` or `commentary.comments.read` as appropriate. Poll mutations and thread decisions require `commentary.comments.write`; configuring settings additionally requires `commentary.review.settings.write`. Request that extra scope explicitly with repeatable `login --scope` options, which replace the default scopes.
 
-```text
-agree
-object
-blocker
-needs_clarification
-addressed
-```
-
-`addressed` and `brainstorm decide` are owner/status operations and require the token to have the required Commentary scopes and feature access. To mark accepted feedback as applied while uploading local changes, pass one or more `--addressed-thread <id>` flags to `commentary sync`.
+All commands support `--stdin`. Reuse the same operation key and intent on retries. Obtain current versions before mutations. Agent input is advisory unless enabled; only humans configure or waive human sign-off. Reading a gate cannot manufacture approval. Upload content with the ordinary sync command, then separately record an application claim against the accepted decision. Resolving a thread does not clear a blocker or create approval.
 
 ## GitHub Base Metadata
 
@@ -803,3 +785,351 @@ revoke its old token. See the [npm trusted publishing documentation](https://doc
 Commentary stores review sessions and comments. The CLI syncs local text files to Commentary and can download reviewed files back to disk. Users and local agents remain responsible for local edits, commits, branches, and pushes.
 
 Use `--dry-run`, `--output`, `--backup`, and `--yes` with `commentary pull` to control local file writes.
+
+## Projects and Trackers
+
+Use singular `project` and `tracker` command families. `track` continues to
+add local files to a Draft. Projects may have no Tracker; Trackers may stand alone.
+Pass `--project <id>` or `--tracker <id>` explicitly. Global profiles, workspace,
+base URL, token and JSON options work across these families.
+
+Request the least-privilege scopes during login (repeat `--scope` to replace
+defaults): `commentary.projects.read/write` and `commentary.trackers.read/write`.
+Provider dispatch also needs `commentary.trackers.writeback`, current provider
+write access and `--provider-intent`. The CLI invokes HTTP v1 only.
+
+### A filesystem workflow
+
+Save a contract as `schema.yaml`:
+
+```yaml
+kind: commentary_tracker
+contractVersion: 1
+name: Release readiness
+fields:
+  - id: title
+    type: text
+    label: Work
+    required: true
+views: []
+```
+
+```sh
+commentary --workspace workspace-1 tracker validate --file schema.yaml --json
+commentary --workspace workspace-1 tracker create --file schema.yaml --idempotency-key tracker-create-1 --json
+commentary project create --workspace workspace-1 --file project.json --idempotency-key project-create-1 --json
+commentary tracker get --tracker tracker-1 --json
+commentary tracker records query --tracker tracker-1 --file query.json --json
+commentary tracker records create --tracker tracker-1 --file record.json --idempotency-key record-create-1 --json
+commentary tracker records update record-1 --tracker tracker-1 --file patch.json --etag '"record-1:v1"' --idempotency-key record-edit-1 --json
+commentary tracker export --tracker tracker-1 --output portable.json --json
+commentary tracker import new-preview --workspace workspace-1 --file portable.json --mode clone --dry-run --idempotency-key clone-preview-1 --json
+```
+
+`project.json` is `{"name":"Release readiness"}`; `query.json` is
+`{"query":{"limit":25,"archived":false}}`. `record.json` contains
+`{"schemaRevisionId":"schema-1","values":{"title":"Review walkthrough"}}`.
+`patch.json` contains
+`{"schemaRevisionId":"schema-1","patch":{"values":{"title":"Updated walkthrough"},"unset":[]}}`.
+Use actual returned IDs, schema IDs and strong ETags. These examples do not assert
+that placeholder IDs exist or that execution status grants human acceptance.
+
+Link an existing Resource with `project resources link --project project-1`,
+an exact Project ETag, retry key and a payload such as
+`{"target":{"type":"tracker","id":"tracker-1"}}`. Links do not copy content
+or grant source access. Resource/relationship detach operations retain originals.
+
+### Operations and safety
+
+Project operations are create/list/get/update/archive/restore/complete,
+`resources list/link/unlink`, `relationships list/link/unlink`, participants,
+external references, workspace links and history. Lifecycle/access management
+remains human-only when required by server authority; CLI registration does not
+grant those permissions. Status/activity/feedback explain the current server
+state through their implemented status/activity/feedback handlers. These commands
+return authoritative status or bounded durable event pages, with opaque cursors.
+
+Tracker operations include validate/create/list/get/update/archive/restore;
+`schema get/list/preview/apply`; `records query/get/history/create/update/bulk/reorder/archive`;
+`views list/get/create/update/delete`; export;
+`import preview/new-preview/apply/get/cancel`; `authority preview/apply`;
+`proposals stage`; and `sync bind/status/proposal/preview/apply/resolve/retry/cancel/refresh`.
+Use nested `--help` for the exact scopes, child identifiers and flags.
+
+Structured operations require exactly one `--file` or `--stdin`, accepting JSON
+or core YAML. Duplicate keys, custom tags, aliases, unsafe keys, credentials and
+oversized inputs are rejected. Contract and record semantics are validated by
+the authoritative server. Import preview accepts either a request envelope or a
+canonical export plus explicit mode/schema options. Query limits are bounded to 100. Import previews may retain a private diagnostic checkpoint; dry-run never
+applies records or writes to a provider. Apply requires the explicit preview or
+proposal identity and exact version. Azure writes return
+`unsupported_provider_write`; the CLI never creates local branches/commits/PRs.
+
+Reuse an idempotency key only for an exact retry, including its original ETag.
+Stale edits retain the submitted request under `.commentary/conflicts/`, refetch
+the current version and return exit 7 (or the server's stable conflict exit).
+Reconcile explicitly using a fresh key; no automatic last-write-wins retry occurs.
+Recovery files never contain CLI credentials; session metadata is untouched.
+
+JSON keeps `ok/data/etag/correlationId/idempotencyReplayed` and server pagination,
+permissions and diagnostics. Replay is `null` when a server omits its optional
+header, instead of inferring that a write did not replay. Errors retain codes and
+field diagnostics. Missing credential profiles fail without fallback.
+
+Core Projects, native Tracker views, portability, agent API and Git source are
+Free. Authorized Git writeback is Pro-preview and remains usable during no billing.
+Publication/deployment, live providers, MCP parity and genuine human acceptance
+require their own release evidence; CLI fixture tests do not establish them.
+
+## Packages and Engineering Reviews
+
+The singular `package`, `review-session`, `source-snapshot`, and `evidence`
+families use HTTP v1 and the same global `--workspace`, `--profile`, `--base-url`
+and `--json` options. Existing Draft `review`, `sync`, `sessions`, `comments`,
+`decision` and `fulfillment` keep their meanings. New scopes must be granted
+explicitly; old credentials gain no additional access automatically.
+
+| Family                           | Scopes                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| Package read/publication         | `commentary.review_packages.read`, `commentary.review_packages.write`                 |
+| Review Session read/revisions    | `commentary.project_reviews.read`, `commentary.project_reviews.write`                 |
+| Exact human review request       | Session write plus `commentary.interactions.create`                                   |
+| Source snapshot read/publication | `commentary.source_snapshots.read`, `commentary.source_snapshots.write`               |
+| Evidence read/write/verification | `commentary.evidence.read`, `commentary.evidence.write`, `commentary.evidence.verify` |
+
+Feedback retrieval additionally requires `commentary.comments.read`. Workspace,
+Resource, registered Agent, current grant and provider authorization are checked
+by the server on each operation. Linking a Resource never grants access to it.
+
+### Publish and revise a walkthrough
+
+Prepare a directory with `index.md`, `architecture.md`, and any referenced static
+assets. An optional `package-manifest.json` outside that directory can describe
+stable page IDs and navigation:
+
+```json
+{
+  "kind": "commentary_review_package",
+  "manifestVersion": 1,
+  "title": "Implementation walkthrough",
+  "entryPage": "index.md",
+  "pages": [
+    { "id": "overview", "path": "index.md", "title": "Overview" },
+    { "id": "architecture", "path": "architecture.md", "title": "Architecture" }
+  ],
+  "trustTier": "static"
+}
+```
+
+```sh
+commentary --workspace workspace-1 --json package validate ./walkthrough --manifest package-manifest.json
+commentary --workspace workspace-1 --json package publish ./walkthrough --manifest package-manifest.json --idempotency-key walkthrough-publish-1 --no-open
+commentary --workspace workspace-1 --json package get package-1
+commentary --workspace workspace-1 --json package revisions package-1
+commentary --workspace workspace-1 --json package comments package-1 --path index.md
+# Edit the walkthrough in response to the returned native review threads.
+commentary --workspace workspace-1 --json package sync ./walkthrough --manifest package-manifest.json --no-open
+commentary --workspace workspace-1 --json package watch ./walkthrough --manifest package-manifest.json --no-open
+commentary --workspace workspace-1 --json package upload status upload-1
+```
+
+Use actual returned identities and exact ETags. `package sync` reads the last
+acknowledged package identity/ETag from `.commentary/package.json`, or accepts
+explicit `--package` and `--etag`. A pending publication retains its original
+retry identity and upload ID; repeating the same input resumes missing chunks.
+Changing pending input returns a conflict rather than silently replacing it.
+Watch debounces changes, serializes revisions, excludes Commentary metadata and
+retains the last acknowledged revision when a publication fails.
+
+`validate` and `--dry-run` hash and validate without HTTP or metadata writes.
+Publication never runs customer build commands. The explicit package collector
+includes generated `dist`/`build` content, while Draft's ignored directories and
+20-file/512-KiB/2-MiB limits remain unchanged. Static packages have at most 10,000
+files and 250 MiB total, with 2 MiB text and 25 MiB asset limits. Supported static
+assets include styles, images, fonts, structured data and PDFs. Paths must be
+relative and unambiguous; symlinks, archives, unsupported executable files,
+duplicate normalized paths and credential configuration are rejected. Executable
+renderer bundles use their separate isolated publication contract.
+
+Package metadata contains identifiers, relative paths, acknowledged hashes and
+pending transfer identities. Source bodies, authentication tokens and reviewer
+identities are excluded. It is separate from Draft's `.commentary/session.json`.
+
+### Compose an exact Review Session
+
+Save `session.json` with exact Resource revisions from authorized server reads:
+
+```json
+{
+  "title": "Review the implementation",
+  "purposeMarkdown": "Read the walkthrough, then inspect the retained source and evidence.",
+  "targets": [
+    {
+      "resource": { "type": "review_package", "id": "package-1" },
+      "revisionId": "package-revision-1",
+      "sha256": "COPY_THE_ACTUAL_RETURNED_64_CHARACTER_SHA256"
+    }
+  ]
+}
+```
+
+The illustrative SHA string must be replaced with the exact returned digest.
+Targets can also include other authorized reviews and snapshots; Session
+composition retains their original Resource identities and access rules.
+
+```sh
+commentary --workspace workspace-1 --json review-session create --file session.json --idempotency-key session-create-1
+commentary --workspace workspace-1 --json review-session list
+commentary --workspace workspace-1 --json review-session get session-1
+commentary --workspace workspace-1 --json review-session status session-1
+commentary --workspace workspace-1 --json review-session manifest session-1 session-revision-1
+commentary --workspace workspace-1 --json review-session resources link session-1 --file target.json --etag '"session-1:v1"' --idempotency-key session-link-1
+commentary --workspace workspace-1 --json review-session revision session-1 --file revised-session.json --etag '"session-1:v2"' --idempotency-key session-revise-1
+commentary --workspace workspace-1 --json review-session request-review session-1 --file acceptance-request.json --etag '"session-1:v3"' --idempotency-key session-review-1
+commentary --workspace workspace-1 --json review-session acceptance get session-1
+commentary --workspace workspace-1 --json review-session feedback session-1 --cursor OPAQUE_CURSOR --timeout 60
+```
+
+`target.json` is `{ "target": <one exact target> }`; `resources unlink` takes the
+same envelope. Both create an immutable manifest revision using the exact Session
+ETag and require a complete authorized manifest. `revised-session.json` contains
+the entire intended ordered `targets` array and optional title/purpose changes.
+`update` changes Session descriptive fields; it does not substitute new targets.
+
+`request-review` calls the existing exact acceptance-request API and creates an
+Interaction for eligible humans. Its request is `{ "target": <exact acceptance
+target>, "consequence": "Accept this exact implementation" }`, with optional
+`approvalPolicy`. The target contains `version: 1`, `sessionId`,
+`sessionRevisionId`, `revisionSetFingerprint`, `manifestSha256`, `scope`
+(`session` or `deliverable`), exact `targets`, and `supportingRevisions` copied
+from authoritative reads. There is no CLI agent approval operation. Reading a
+receipt or publishing a later revision does not manufacture acceptance; material
+revision changes are evaluated against the server's exact acceptance rules.
+
+Session activity/feedback return one bounded event page, optionally waiting
+0–10,000 ms with `--wait-ms`. `--timeout` waits for at most 1–3,600 seconds,
+replays the last acknowledged cursor after disconnection, and refetches the
+current Session once after a cursor gap. The JSON marks that recovery with
+`resynchronized` and an authorized `snapshot`. Retain `nextCursor` unchanged for
+the next invocation. Timeout returns 124 and interruption returns 130.
+
+### Retain source provenance
+
+Provider publication takes an explicit repository Resource and exact commit SHA:
+
+```json
+{
+  "reference": {
+    "provider": "github",
+    "resource": { "type": "repository", "id": "repository-1" },
+    "commitSha": "COPY_THE_ACTUAL_40_CHARACTER_COMMIT_SHA"
+  },
+  "capturePolicy": "selected",
+  "selectedPaths": ["src/app.ts"]
+}
+```
+
+```sh
+commentary --workspace workspace-1 --json source-snapshot publish --file source-request.json --idempotency-key source-reference-1
+commentary --workspace workspace-1 --json source-snapshot get snapshot-1
+commentary --workspace workspace-1 --json source-snapshot tree snapshot-1 --path src
+commentary --workspace workspace-1 --json source-snapshot file snapshot-1 --path src/app.ts --start-line 1 --line-count 100
+commentary --workspace workspace-1 --json source-snapshot search snapshot-1 --file search.json
+commentary --workspace workspace-1 --json source-snapshot publish-directory ./source --file local-source.json --idempotency-key local-source-1 --dry-run
+commentary --workspace workspace-1 --json source-snapshot publish-directory ./source --file local-source.json --idempotency-key local-source-1 --no-open
+```
+
+`search.json` is `{ "query": "counter", "limit": 25 }`. `local-source.json` is
+`{ "reference": { "provider": "uploaded", "resource": { "type": "repository",
+"id": "repository-1" } }, "capturePolicy": "full" }`. It omits `uploadId`; the
+CLI supplies it after resumable upload. Directory transfers additionally require `commentary.review_packages.read` and `commentary.review_packages.write` for the shared upload protocol. Local bytes have `uploaded` provenance,
+not provider-confirmed provenance. Provider publication supports GitHub and
+Azure DevOps reads under current authority. Tree/file/search always read the
+hosted snapshot; local files do not replace revoked or unavailable hosted content.
+
+Local collection permits bounded inert source files, requires at most 5,000
+files, and retains the upload safety rules and conservative text limits. The
+shared inert upload policy excludes script and executable names such as `.py`,
+`.rb`, `.sh`, `.bat`, `.cmd`, `.ps1`, `.php`, `Dockerfile` and `Procfile`, as well
+as executable binaries and archives. Admitted source text remains inert;
+publication never executes code. `.commentary/source-snapshot.json` retains hashes and transfer
+identities separately from Draft and package metadata. Retrying unchanged input
+with the same key resumes the transfer; modified pending input fails safely.
+
+### Keep reports separate from observed verification
+
+```sh
+commentary --workspace workspace-1 --json evidence attach --file evidence.json --idempotency-key evidence-attach-1
+commentary --workspace workspace-1 --json evidence list --context '{"type":"project_review_session","id":"session-1"}'
+commentary --workspace workspace-1 --json evidence get evidence-1
+commentary --workspace workspace-1 --json evidence reconcile evidence-1 --file evidence-update.json --etag '"evidence-1:v1"' --idempotency-key evidence-reconcile-1
+commentary --workspace workspace-1 --json evidence request-verification evidence-1 --file verification.json --etag '"evidence-1:v2"' --idempotency-key verification-request-1
+commentary --workspace workspace-1 --json evidence read-results evidence-1 verification-1
+```
+
+`evidence.json` contains an owning `context` (Project or Review Session), `title`,
+exact `targets`, optional relations and supplied `report: { "format": "json",
+"content": "..." }`, plus optional reported `result`. Local reports are inert
+caller evidence; the CLI does not parse a test report as proof that Commentary
+ran it. `verification.json` names the exact `evidenceRevisionId`, `provider`,
+`runId`, `commitSha`, and optional expected artifact digests. Server observations
+remain distinct from reported outcomes, artifact existence, human review and
+acceptance. Read JSON provenance, currency and receipt fields as returned.
+
+Basic packages, Session organization, source exploration, evidence and agent
+access are Free under `review_packages.basic`, `review_packages.agent_api`,
+`project_reviews.basic`, `project_reviews.agent_api`, `review.source_explorer`
+and `projects.evidence.basic`. Advanced independent evidence processing uses
+`project_reviews.advanced_evidence` Pro-preview and remains usable during the
+no-billing phase. Dedicated renderer entitlements govern executable bundles.
+
+JSON responses preserve `ok/data/etag/correlationId/idempotencyReplayed`, exact
+revision identities, canonical URLs and server attention/provenance fields when
+provided. Exact ETags and retry keys govern conditional writes; stale versions
+are not overwritten. Older servers return actionable unsupported-capability
+errors. Auth/API/safety/conflict/validation exits remain 3/5/6/7/8.
+Deterministic fixtures and installed integration tests are separate from live
+provider validation and real human correction/acceptance. Those release
+boundaries require their own recorded evidence; CLI tests do not establish them.
+
+## Current API parity
+
+The CLI covers the versioned 158-operation Projects catalog through commands and
+local publication workflows. `npm run contracts:check` verifies that the runtime
+catalog and test snapshot agree. Maintainers can compare a supplied canonical
+contract with `npm run contracts:check -- --source <canonical-contract.json>`.
+The normal verification gate also checks that each operation has a reachable
+command or an explicit publication/sync step.
+
+Additional package operations use exact package and revision identities:
+
+```sh
+commentary --json package upload cancel upload-1 --idempotency-key cancel-1
+commentary --json package files download package-1 revision-1 --path assets/diagram.svg --output diagram.svg
+commentary --json package indexing retry package-1 revision-1 --idempotency-key retry-index-1
+commentary --json package comments mutate package-1 revision-1 --file comment-action.json
+commentary --json package renderers list package-1 --revision-id revision-1
+commentary --json package renderers manage package-1 --file renderer-action.json
+commentary --json package impact package-1 --from-revision-id revision-1 --to-revision-id revision-2
+commentary --json review-session impact compare session-1 --from-revision-id revision-1 --to-revision-id revision-2
+```
+
+Downloads preserve bytes and MIME, accept at most 25 MiB, and require a new output
+file. JSON output reports its path, size, SHA-256, ETag and correlation ID. Existing
+files are never replaced. Comment actions use the current server schema, for
+example `{ "action": "reply", "threadId": "thread-1", "bodyMarkdown": "Updated the explanation." }`.
+Comment status actions require the separate comment-status scope. Renderer and
+indexing operations retain their existing server permissions and license checks.
+
+`review-session request review session-1 --file invitation.json --etag '"version"'
+--idempotency-key invitation-1` sends an ordinary review invitation. Its payload
+contains `manifestSha256`, `recipientIds`, and optional `messageMarkdown`.
+The existing `review-session request-review` continues to request exact human
+acceptance; the two operations have distinct payloads and do not approve anything.
+
+Inbox listing supports `--interaction-type` and `--priority-band` alongside its
+other filters. Interaction listing accepts Project, Tracker, package, review-guide
+and source-snapshot resource types; interaction creation keeps its narrower
+supported resource contract. Poll listing accepts `action` (`get`, `list` or
+`markdown`), `pollId`, `threadId`, `outcome` and `after` in its JSON request as
+appropriate. Expired event cursors retain the API's validation exit code 8.

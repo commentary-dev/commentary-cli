@@ -109,6 +109,8 @@ function register(parent: Command, runtime: CommandRuntime, definition: Definiti
       "status",
       "deadline",
       "assignment",
+      "interactionType",
+      "priorityBand",
       "queueName",
       "window",
       "scope",
@@ -322,6 +324,8 @@ export function addAgentCommands(program: Command, runtime: CommandRuntime) {
       ["--status <status>", "Recipient status."],
       ["--deadline <deadline>", "Deadline window."],
       ["--assignment <assignment>", "any, me, or unassigned."],
+      ["--interaction-type <type>", "Interaction type."],
+      ["--priority-band <band>", "Priority band."],
     ],
   });
   register(inbox, runtime, {
