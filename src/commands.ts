@@ -18,6 +18,8 @@ import {
   removeStoredToken,
   setStoredToken,
   shouldRefreshStoredToken,
+  withStoredTokenRefreshLock,
+  replaceStoredToken,
   validateProfile,
   type StoredToken,
 } from "./config.js";
@@ -123,8 +125,12 @@ export async function makeClient(runtime: CommandRuntime, options: GlobalOptions
     });
   }
 
-  const refreshStored = () => refreshStoredLogin(runtime, baseUrl, options.profile);
-  const token = shouldRefreshStoredToken(stored) ? await refreshStored() : stored.accessToken;
+  let token: string | null = stored.accessToken;
+  const refreshStored = async (failedAccessToken = token) => {
+    token = await refreshStoredLogin(runtime, baseUrl, options.profile, failedAccessToken);
+    return token;
+  };
+  if (shouldRefreshStoredToken(stored)) await refreshStored();
   return new CommentaryApiClient({
     baseUrl,
     token,
@@ -142,28 +148,36 @@ function isInvalidRefreshError(error: unknown) {
   );
 }
 
-async function refreshStoredLogin(runtime: CommandRuntime, baseUrl: string, profile?: string) {
-  const stored = await getStoredToken(baseUrl, profile);
-  if (!stored?.refreshToken) {
-    return null;
-  }
-  try {
-    const client = new CommentaryApiClient({ baseUrl, fetchImpl: runtime.fetchImpl });
-    const token = await client.refreshAccessToken({ refreshToken: stored.refreshToken });
-    const refreshed: StoredToken = {
-      accessToken: token.access_token,
-      refreshToken: token.refresh_token,
-      expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
-    };
-    await setStoredToken(baseUrl, refreshed, profile);
-    return refreshed.accessToken;
-  } catch (error) {
-    if (isInvalidRefreshError(error)) {
-      await removeStoredToken(baseUrl, profile);
-      throw new CliError("Stored Commentary login expired. Run commentary login.", ExitCode.Auth);
+async function refreshStoredLogin(
+  runtime: CommandRuntime,
+  baseUrl: string,
+  profile: string | undefined,
+  expectedAccessToken: string | null,
+) {
+  return withStoredTokenRefreshLock(baseUrl, profile, async () => {
+    const stored = await getStoredToken(baseUrl, profile);
+    if (stored && stored.accessToken !== expectedAccessToken) return stored.accessToken;
+    if (!stored?.refreshToken) {
+      return null;
     }
-    throw error;
-  }
+    try {
+      const client = new CommentaryApiClient({ baseUrl, fetchImpl: runtime.fetchImpl });
+      const token = await client.refreshAccessToken({ refreshToken: stored.refreshToken });
+      const refreshed: StoredToken = {
+        accessToken: token.access_token,
+        refreshToken: token.refresh_token,
+        expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
+      };
+      return (await replaceStoredToken(baseUrl, stored, refreshed, profile))?.accessToken ?? null;
+    } catch (error) {
+      if (isInvalidRefreshError(error)) {
+        const current = await replaceStoredToken(baseUrl, stored, null, profile);
+        if (current) return current.accessToken;
+        throw new CliError("Stored Commentary login expired. Run commentary login.", ExitCode.Auth);
+      }
+      throw error;
+    }
+  });
 }
 
 function apiFilesFromRevision(revision: DraftReviewRevision | null) {

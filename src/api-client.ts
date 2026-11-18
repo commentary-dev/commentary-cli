@@ -35,7 +35,7 @@ type ApiClientOptions = {
   token?: string | null | undefined;
   workspaceId?: string | undefined;
   fetchImpl?: FetchLike | undefined;
-  onAuthRefresh?: (() => Promise<string | null>) | undefined;
+  onAuthRefresh?: ((failedAccessToken: string) => Promise<string | null>) | undefined;
 };
 
 type OAuthMetadata = {
@@ -66,7 +66,9 @@ export class CommentaryApiClient {
   private token: string | null;
   private readonly workspaceId: string | undefined;
   private readonly fetchImpl: FetchLike;
-  private readonly onAuthRefresh: (() => Promise<string | null>) | undefined;
+  private readonly onAuthRefresh:
+    | ((failedAccessToken: string) => Promise<string | null>)
+    | undefined;
 
   constructor(options: ApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -894,7 +896,9 @@ export class CommentaryApiClient {
       if (response.status !== 401 || !init.auth || !this.onAuthRefresh) {
         return response;
       }
-      const refreshedToken = await this.onAuthRefresh();
+      const refreshedToken = await this.onAuthRefresh(
+        headers.authorization!.slice("Bearer ".length),
+      );
       if (!refreshedToken) {
         return response;
       }

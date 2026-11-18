@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import lockfile from "proper-lockfile";
 import { DEFAULT_BASE_URL } from "./constants.js";
 import { CliError, ExitCode } from "./errors.js";
 
@@ -35,16 +37,102 @@ export function configPath() {
 async function readConfig(): Promise<StoredConfig> {
   try {
     return JSON.parse(await fs.readFile(configPath(), "utf8")) as StoredConfig;
-  } catch {
-    return {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new CliError(
+      "Could not read saved credentials. Check the Commentary config file.",
+      ExitCode.Auth,
+    );
   }
 }
 
 async function writeConfig(config: StoredConfig) {
   await fs.mkdir(configDir(), { recursive: true, mode: 0o700 });
-  await fs.writeFile(configPath(), `${JSON.stringify(config, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
+  const temporary = `${configPath()}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await fs.rename(temporary, configPath());
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+async function withConfigLock<T>(suffix: string, run: () => Promise<T>): Promise<T> {
+  await fs.mkdir(configDir(), { recursive: true, mode: 0o700 });
+  const release = await lockfile.lock(`${configPath()}.${suffix}`, {
+    realpath: false,
+    stale: 30_000,
+    update: 5_000,
+    retries: { retries: 300, minTimeout: 200, maxTimeout: 200, randomize: false },
+  });
+  try {
+    return await run();
+  } finally {
+    await release();
+  }
+}
+
+export function withStoredTokenRefreshLock<T>(
+  baseUrl: string,
+  profile: string | undefined,
+  run: () => Promise<T>,
+) {
+  validateProfile(profile);
+  const key = createHash("sha256")
+    .update(JSON.stringify([normalizeBaseUrl(baseUrl), profile ?? null]))
+    .digest("hex");
+  return withConfigLock(`refresh-${key}`, run);
+}
+
+function tokenFromConfig(config: StoredConfig, baseUrl: string, profile?: string) {
+  if (profile) {
+    const profiles = config.profiles?.[normalizeBaseUrl(baseUrl)];
+    return profiles && Object.hasOwn(profiles, profile) ? (profiles[profile] ?? null) : null;
+  }
+  return config.tokens?.[normalizeBaseUrl(baseUrl)] ?? null;
+}
+
+function putToken(
+  config: StoredConfig,
+  baseUrl: string,
+  token: StoredToken | null,
+  profile?: string,
+) {
+  if (profile) {
+    config.profiles ??= {};
+    config.profiles[normalizeBaseUrl(baseUrl)] ??= {};
+    if (token) config.profiles[normalizeBaseUrl(baseUrl)]![profile] = token;
+    else delete config.profiles[normalizeBaseUrl(baseUrl)]![profile];
+  } else {
+    config.tokens ??= {};
+    if (token) config.tokens[normalizeBaseUrl(baseUrl)] = token;
+    else delete config.tokens[normalizeBaseUrl(baseUrl)];
+  }
+}
+
+/** A stale refresh must never overwrite or erase a concurrent explicit login. */
+export function replaceStoredToken(
+  baseUrl: string,
+  expected: StoredToken,
+  next: StoredToken | null,
+  profile?: string,
+) {
+  validateProfile(profile);
+  return withConfigLock("write", async () => {
+    const config = await readConfig();
+    const current = tokenFromConfig(config, baseUrl, profile);
+    if (
+      current?.accessToken !== expected.accessToken ||
+      current?.refreshToken !== expected.refreshToken
+    )
+      return current;
+    putToken(config, baseUrl, next, profile);
+    await writeConfig(config);
+    return next;
   });
 }
 
@@ -66,38 +154,25 @@ export function validateProfile(profile: string | undefined) {
 
 export async function getStoredToken(baseUrl: string, profile?: string) {
   validateProfile(profile);
-  const config = await readConfig();
-  if (profile) {
-    const profiles = config.profiles?.[normalizeBaseUrl(baseUrl)];
-    return profiles && Object.hasOwn(profiles, profile) ? (profiles[profile] ?? null) : null;
-  }
-  return config.tokens?.[normalizeBaseUrl(baseUrl)] ?? null;
+  return tokenFromConfig(await readConfig(), baseUrl, profile);
 }
 
 export async function setStoredToken(baseUrl: string, token: StoredToken, profile?: string) {
   validateProfile(profile);
-  const config = await readConfig();
-  if (profile) {
-    config.profiles ??= {};
-    config.profiles[normalizeBaseUrl(baseUrl)] ??= {};
-    config.profiles[normalizeBaseUrl(baseUrl)]![profile] = token;
-  } else {
-    config.tokens ??= {};
-    config.tokens[normalizeBaseUrl(baseUrl)] = token;
-  }
-  await writeConfig(config);
+  await withConfigLock("write", async () => {
+    const config = await readConfig();
+    putToken(config, baseUrl, token, profile);
+    await writeConfig(config);
+  });
 }
 
 export async function removeStoredToken(baseUrl: string, profile?: string) {
   validateProfile(profile);
-  const config = await readConfig();
-  if (profile) {
-    const profiles = config.profiles?.[normalizeBaseUrl(baseUrl)];
-    if (profiles) delete profiles[profile];
-  } else if (config.tokens) {
-    delete config.tokens[normalizeBaseUrl(baseUrl)];
-  }
-  await writeConfig(config);
+  await withConfigLock("write", async () => {
+    const config = await readConfig();
+    putToken(config, baseUrl, null, profile);
+    await writeConfig(config);
+  });
 }
 
 export async function resolveToken(input: { baseUrl: string; token?: string | null | undefined }) {
