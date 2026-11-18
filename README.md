@@ -74,6 +74,11 @@ COMMENTARY_TOKEN=<token> commentary review ./docs/spec.md
 Tokens are stored outside the project config. Project metadata in `.commentary/session.json` never stores secrets.
 Device-login tokens refresh automatically until the stored refresh token expires or is revoked.
 
+Version 0.3.1 coordinates automatic refresh across concurrent commands and preserves
+newer saved logins if an older refresh finishes later. Device authorization lasts
+up to 30 days and still depends on the connected provider account. If that access
+has already been revoked, run `commentary login` to authorize it again.
+
 ## Common Workflow
 
 Create a review:
